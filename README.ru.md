@@ -99,6 +99,22 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 С `claude`, `codex`, `opencode` и удалённым `api` текст встречи уходит в этот сервис, с `local` — остаётся на
 машине. Саммари делается из `transcript.md`, поэтому ручные правки имён и терминов в нём попадут в саммари.
 
+## Как устроено
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-ru-dark.png">
+  <img src="docs/pipeline-ru-light.png" width="900" alt="Схема: запись → распознавание речи, диаризация и скриншоты параллельно → сборка → имена → саммари → HTML и PDF; на каждом шаге — флаги, которые его меняют">
+</picture>
+
+На каждом шаге — флаги, которые его меняют; значения по умолчанию задаёт `setup`, все флаги — в [Командах](#команды), переменные — в [Настройках](#настройки).
+
+- распознавание: на Mac с Apple Silicon — [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
+  (whisper large-v3-turbo на GPU), на остальных — [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
+  large-v3 + выравнивание по словам) на CPU или NVIDIA GPU;
+- спикеры: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
+- скриншоты: смены сцены ffmpeg + отсев дублей;
+- имена на экране: Apple Vision на macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) на Linux, на этой машине.
+
 ### Языки
 
 Распознавание `large-v3` многоязычное, одна модель на все языки. Для таймкодов по словам у каждого языка своя
@@ -285,22 +301,6 @@ tl, tr, uk, ur, vi, zh. `./transcribe setup --language ru,en` скачает м�
 слова-паразиты и формы слов; слепой судья поставил whisperx 7,5/10, mlx turbo 7,0. Если точность важнее
 времени — выберите `large-v3` в `./transcribe setup`. На NVIDIA GPU whisperx large-v3 в разы быстрее, чем на
 CPU (сами не замеряли: нет такой машины).
-
-## Как устроено
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-ru-dark.png">
-  <img src="docs/pipeline-ru-light.png" width="900" alt="Схема: запись → распознавание речи, диаризация и скриншоты параллельно → сборка → имена → саммари → HTML и PDF; на каждом шаге — флаги, которые его меняют">
-</picture>
-
-На каждом шаге — флаги, которые его меняют; значения по умолчанию задаёт `setup`, все флаги — в [Командах](#команды), переменные — в [Настройках](#настройки).
-
-- распознавание: на Mac с Apple Silicon — [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-  (whisper large-v3-turbo на GPU), на остальных — [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
-  large-v3 + выравнивание по словам) на CPU или NVIDIA GPU;
-- спикеры: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
-- скриншоты: смены сцены ffmpeg + отсев дублей;
-- имена на экране: Apple Vision на macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) на Linux, на этой машине.
 
 ## Ограничения
 
