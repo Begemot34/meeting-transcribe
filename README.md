@@ -2,7 +2,9 @@
 
 # meeting-transcribe
 
+[![check](https://github.com/Begemot34/meeting-transcribe/actions/workflows/check.yml/badge.svg)](https://github.com/Begemot34/meeting-transcribe/actions/workflows/check.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 ![Python 3.11](https://img.shields.io/badge/python-3.11-3776ab)
 ![macOS (Apple Silicon) · Linux](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29%20%C2%B7%20Linux-555)
 
