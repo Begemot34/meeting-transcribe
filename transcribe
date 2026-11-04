@@ -224,7 +224,7 @@ Maintenance:
   install-skill           register SKILL.md for agents (Claude Code, Codex, OpenCode, Gemini CLI, Cursor, Cline, …)
   uninstall-skill         remove what install-skill wrote
 
-All environment variables: README, "Settings".
+All options: COMMANDS.md; environment variables: README, "Settings".
 EOF
 }
 
