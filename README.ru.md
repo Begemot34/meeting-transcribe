@@ -99,6 +99,21 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 С `claude`, `codex`, `opencode` и удалённым `api` текст встречи уходит в этот сервис, с `local` — остаётся на
 машине. Саммари делается из `transcript.md`, поэтому ручные правки имён и терминов в нём попадут в саммари.
 
+### Языки
+
+Распознавание `large-v3` многоязычное, одна модель на все языки. Для таймкодов по словам у каждого языка своя
+модель выравнивания. У whisperx есть готовые для ~40 языков: английский и русский, а также ar, ca, cs, da, de,
+el, es, eu, fa, fi, fr, gl, he, hi, hr, hu, id, it, ja, ka, ko, lv, ml, nl, nn, no, pl, pt, ro, sk, sl, sv, te,
+tl, tr, uk, ur, vi, zh. `./transcribe setup --language ru,en` скачает модели для обоих, первый язык станет
+языком по умолчанию. Другой язык для одной записи: `auto … --language en`.
+
+Саммари пишется на языке встречи. Заголовки в `transcript.md`, HTML и PDF — русские или английские: у остальных
+языков английские.
+
+Для другого языка или своей модели выравнивания: `MT_ALIGN_MODEL=<репозиторий wav2vec2 на huggingface.co>`
+или путь к папке с такой моделью. Своя модель распознавания: `MT_WHISPER_MODEL=<имя, репозиторий или папка>`
+в формате CTranslate2.
+
 ## Как устроено
 
 <picture>
@@ -114,21 +129,6 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 - спикеры: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
 - скриншоты: смены сцены ffmpeg + отсев дублей;
 - имена на экране: Apple Vision на macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) на Linux, на этой машине.
-
-### Языки
-
-Распознавание `large-v3` многоязычное, одна модель на все языки. Для таймкодов по словам у каждого языка своя
-модель выравнивания. У whisperx есть готовые для ~40 языков: английский и русский, а также ar, ca, cs, da, de,
-el, es, eu, fa, fi, fr, gl, he, hi, hr, hu, id, it, ja, ka, ko, lv, ml, nl, nn, no, pl, pt, ro, sk, sl, sv, te,
-tl, tr, uk, ur, vi, zh. `./transcribe setup --language ru,en` скачает модели для обоих, первый язык станет
-языком по умолчанию. Другой язык для одной записи: `auto … --language en`.
-
-Саммари пишется на языке встречи. Заголовки в `transcript.md`, HTML и PDF — русские или английские: у остальных
-языков английские.
-
-Для другого языка или своей модели выравнивания: `MT_ALIGN_MODEL=<репозиторий wav2vec2 на huggingface.co>`
-или путь к папке с такой моделью. Своя модель распознавания: `MT_WHISPER_MODEL=<имя, репозиторий или папка>`
-в формате CTranslate2.
 
 ## Команды
 

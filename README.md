@@ -102,22 +102,6 @@ With `claude`, `codex`, `opencode` and a remote `api` the meeting text goes to t
 stays on the machine. The summary is made from `transcript.md`, so your manual fixes of names and terms in it
 reach the summary.
 
-## How it works
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-en-dark.png">
-  <img src="docs/pipeline-en-light.png" width="900" alt="Diagram: recording → speech recognition, diarization and screenshots in parallel → assembly → names → summary → HTML and PDF; each step shows the flags that change it">
-</picture>
-
-Each step shows the flags that change it; `setup` sets the defaults, all flags are in [Commands](#commands), the variables in [Settings](#settings).
-
-- speech recognition: on a Mac with Apple Silicon [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-  (whisper large-v3-turbo on the GPU); elsewhere [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
-  large-v3 + word alignment) on the CPU or an NVIDIA GPU;
-- speakers: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
-- screenshots: ffmpeg scene changes, with duplicates removed;
-- names on screen: Apple Vision on macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) on Linux, on this machine.
-
 ### Languages
 
 The `large-v3` recognition model is multilingual: one model covers every language. Word-level timestamps need
@@ -133,6 +117,22 @@ languages get the English ones.
 For another language or your own alignment model, set `MT_ALIGN_MODEL=<wav2vec2 repo on huggingface.co>` or
 point it to a folder with such a model. For your own recognition model, set
 `MT_WHISPER_MODEL=<name, repo or folder>` in the CTranslate2 format.
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-en-dark.png">
+  <img src="docs/pipeline-en-light.png" width="900" alt="Diagram: recording → speech recognition, diarization and screenshots in parallel → assembly → names → summary → HTML and PDF; each step shows the flags that change it">
+</picture>
+
+Each step shows the flags that change it; `setup` sets the defaults, all flags are in [Commands](#commands), the variables in [Settings](#settings).
+
+- speech recognition: on a Mac with Apple Silicon [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
+  (whisper large-v3-turbo on the GPU); elsewhere [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
+  large-v3 + word alignment) on the CPU or an NVIDIA GPU;
+- speakers: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
+- screenshots: ffmpeg scene changes, with duplicates removed;
+- names on screen: Apple Vision on macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) on Linux, on this machine.
 
 ## Commands
 
