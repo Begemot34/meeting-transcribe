@@ -56,6 +56,8 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 с плиток видео или из того, как люди представляются, и подпишет реплики именами вместо `SPEAKER_00`. Позвать
 скилл явно: `/meeting-transcribe` в Claude Code, `$meeting-transcribe` в Codex.
 
+## Результаты работы
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/report-dark.png">
   <img src="docs/report-light.png" width="900" alt="Начало отчёта: спикеры, саммари, решения, шаги">

@@ -58,6 +58,8 @@ names from the "who is speaking" badge, the video tiles or the way people introd
 utterances with names instead of `SPEAKER_00`. To call the skill by name: `/meeting-transcribe` in Claude Code,
 `$meeting-transcribe` in Codex.
 
+## Results
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/report-dark.png">
   <img src="docs/report-light.png" width="900" alt="Top of a report: speakers, summary, decisions, next steps">
