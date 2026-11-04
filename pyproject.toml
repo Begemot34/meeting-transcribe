@@ -1,0 +1,54 @@
+[project]
+name = "meeting-transcribe"
+version = "0.1.0"
+description = "Local meeting transcript by speakers with screenshots: whisperx + pyannote, CPU, offline after first run"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "whisperx==3.8.6",
+    "pyannote-audio==4.0.7",
+    "pillow>=11",
+    "imageio-ffmpeg>=0.6",
+    "fpdf2>=2.8",
+    "mlx-whisper==0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",  # optional fast recognition on Apple GPU
+    # speaker names from the screen (scripts/names_screen.py): the system OCR on macOS, EasyOCR elsewhere
+    "pyobjc-framework-Vision==13.0; sys_platform == 'darwin'",
+    "easyocr==1.7.2; sys_platform == 'linux'",
+]
+
+# torch comes in one of two builds, chosen by ./transcribe (MT_DEVICE): `cpu` everywhere, `cuda` for an NVIDIA GPU
+# on Linux. On Linux the default PyPI torch carries ~3 GB of CUDA libraries, so the CPU build comes from the
+# PyTorch index; on macOS both are the PyPI build.
+[project.optional-dependencies]
+cpu = ["torch==2.8.0", "torchaudio==2.8.0", "torchvision==0.23.0"]
+cuda = ["torch==2.8.0", "torchaudio==2.8.0", "torchvision==0.23.0"]
+
+[tool.uv]
+package = false
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }]]
+# torchcodec (pyannote's audio decoder) has no Linux aarch64 wheel; diarize.py hands pyannote decoded audio,
+# so it is not needed there
+override-dependencies = ["torchcodec==0.7.0; sys_platform != 'linux' or platform_machine != 'aarch64'"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cuda", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cuda", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cuda", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

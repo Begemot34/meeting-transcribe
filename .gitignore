@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+.export_cache/
+out/
+work/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4a
+*.wav
+*.mp3
+.DS_Store
+.env
+.env.*
+.ollama.log
+# speaker names written by hand (README: names.json) — real people's names
+names.json
+speakers.json
+
+# модели, положенные вручную (см. ./transcribe doctor); в репозитории только диаризация
+models/*
+!models/speaker-diarization-community-1/
+# выбор из интерактивного ./transcribe setup
+config.env
+config.env.*

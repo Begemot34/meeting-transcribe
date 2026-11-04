@@ -1,0 +1,935 @@
+#!/usr/bin/env bash
+# Single entry point. On first run it installs uv, Python 3.11, dependencies and ffmpeg into ./.venv.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+VENV="$ROOT/.venv"
+PY="$VENV/bin/python"
+S="$ROOT/scripts"
+CONFIG="$ROOT/config.env"  # choices from the interactive setup
+# shellcheck source=/dev/null
+# exported: summarize.py reads MT_LLM_BASE_URL, MT_LLM_MODEL, MT_LLM_API_KEY, MT_OPENCODE_MODEL from the environment
+if [ -f "$CONFIG" ]; then set -a; . "$CONFIG"; set +a; fi
+# Apple Silicon: mlx-whisper on the GPU, ~6× faster, nearly the same quality (README "Speed"); elsewhere whisperx
+DEFAULT_WHISPER=large-v3
+[ "$(uname -sm)" != "Darwin arm64" ] || DEFAULT_WHISPER=mlx-large-v3-turbo
+WHISPER_MODEL="${MT_WHISPER_MODEL:-$DEFAULT_WHISPER}"
+DEFAULT_LANGUAGE="${MT_LANGUAGE:-en}"
+SETUP_LANGUAGES="en,ru"
+DEVICE="${MT_DEVICE:-cpu}"  # cuda: an NVIDIA GPU on Linux, chosen in setup
+compute_type() {  # int8 on the CPU; float16 on the GPU, int8_float16 when it has under 8 GB (large-v3 + pyannote)
+  local mib
+  if [ -n "${MT_COMPUTE_TYPE:-}" ]; then echo "$MT_COMPUTE_TYPE"; return; fi
+  if [ "$DEVICE" != cuda ]; then echo int8; return; fi
+  mib="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9)"
+  if [ -n "$mib" ] && [ "$mib" -lt 8000 ]; then echo int8_float16; else echo float16; fi
+}
+LOCAL_LLM="${MT_LOCAL_MODEL:-gemma4:26b}"  # summary model for --llm local, see README "Summary"
+LOCAL_LLM_GB=18.7 LOCAL_LLM_RAM_GB=32
+# pyannote.audio 4 sends usage metrics (file duration, number of speakers) to pyannote.ai by default; the tool
+# promises that nothing leaves the machine, so it is off unless the user turns it on explicitly.
+export PYANNOTE_METRICS_ENABLED="${PYANNOTE_METRICS_ENABLED:-false}"
+export PYTHONUTF8=1  # read and write UTF-8 whatever the locale is
+
+log() { printf '\033[1;34m[transcribe]\033[0m %s\n' "$*" >&2; }
+die() { printf '\033[1;31m[transcribe]\033[0m %s\n' "$*" >&2; exit 1; }
+apple_silicon() { [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; }
+# NVIDIA on Linux x86_64 only: the CTranslate2 wheels for aarch64 have no CUDA
+nvidia_gpu() {  # name, memory and driver of the first NVIDIA GPU, empty without one
+  [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] && command -v nvidia-smi >/dev/null || return 0
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null | head -1 || true
+}
+gpu_mib() { nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9; }
+CUDA_DRIVER=570  # the torch build in uv.lock is CUDA 12.8; 570 is the driver it was released with
+driver_ok() {
+  local v
+  v="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
+  [ -n "$v" ] && [ "${v%%.*}" -ge "$CUDA_DRIVER" ] 2>/dev/null
+}
+MLX_MODELS="mlx-large-v3-turbo"  # the same list as MLX_MODELS in scripts/models.py
+is_mlx() { case " $MLX_MODELS " in *" $WHISPER_MODEL "*) return 0 ;; esac; return 1; }  # scripts/asr_mlx.py
+
+ensure_uv() {
+  command -v uv >/dev/null && return
+  export PATH="$HOME/.local/bin:$PATH"
+  command -v uv >/dev/null && return
+  if command -v brew >/dev/null; then
+    log "installing uv (brew install uv)"
+    brew install uv >&2 || die "brew install uv failed, install uv by hand: https://docs.astral.sh/uv/getting-started/installation/"
+  else
+    log "installing uv (https://docs.astral.sh/uv/)"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >&2
+  fi
+  command -v uv >/dev/null || die "uv did not install, install it by hand: https://docs.astral.sh/uv/getting-started/installation/"
+}
+
+# What the locked dependencies run on: say so before downloading gigabytes, not in the middle of uv sync.
+check_platform() {
+  local os arch ver glibc
+  os="$(uname -s)"; arch="$(uname -m)"
+  case "$os/$arch" in
+    Darwin/arm64)
+      ver="$(sw_vers -productVersion 2>/dev/null || echo 14)"
+      [ "${ver%%.*}" -ge 14 ] || die "macOS $ver: needs macOS 14 or newer (the GPU libraries for Apple Silicon)" ;;
+    Darwin/*) die "an Intel Mac is not supported: PyTorch no longer ships builds for it. Use a Mac with Apple Silicon or Linux" ;;
+    Linux/x86_64|Linux/aarch64)
+      glibc="$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$' || true)"
+      [ -n "$glibc" ] || die "this Linux has no glibc (Alpine/musl?): PyTorch needs glibc 2.28+, e.g. Ubuntu 20.04+, Debian 10+"
+      [ "${glibc%%.*}" -gt 2 ] || [ "${glibc#*.}" -ge 28 ] || die "glibc $glibc is too old: PyTorch needs 2.28+ (Ubuntu 20.04+, Debian 10+, RHEL 8+)"
+      # the OpenMP runtime of PyTorch: on desktops it is there, minimal images and containers may lack it
+      if ! { { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libgomp\.so\.1'; } \
+          && ! ls /usr/lib*/libgomp.so.1 /usr/lib*/*/libgomp.so.1 /lib*/*/libgomp.so.1 >/dev/null 2>&1; then
+        die "PyTorch needs the OpenMP library libgomp.so.1: sudo apt install libgomp1 (Debian, Ubuntu) or sudo dnf install libgomp (Fedora, RHEL)"
+      fi ;;
+    *) die "$os/$arch is not supported: macOS on Apple Silicon or Linux x86_64/aarch64" ;;
+  esac
+}
+
+ensure_env() {
+  check_platform
+  ensure_uv
+  # the torch build follows the device (pyproject.toml extras): a change of MT_DEVICE re-syncs the environment
+  local build=cpu size="~1.5 GB"
+  if [ "$DEVICE" = cuda ]; then build=cuda; size="~5 GB with the CUDA libraries"; fi
+  if [ ! -x "$PY" ] || [ "$ROOT/uv.lock" -nt "$VENV/.synced" ] || [ "$(cat "$VENV/.synced" 2>/dev/null)" != "$build" ]; then
+    log "installing dependencies ($build build of torch) into $VENV (first time: a few minutes, $size)…"
+    (cd "$ROOT" && uv sync --frozen --extra "$build" --python 3.11 --compile-bytecode --quiet >&2) \
+      || die "dependency install failed (uv sync), see the output above"
+    log "dependencies installed"
+    echo "$build" > "$VENV/.synced"
+  fi
+  if [ ! -x "$VENV/bin/ffmpeg" ]; then
+    local sys_ffmpeg
+    sys_ffmpeg="$(command -v ffmpeg || true)"
+    if [ -n "$sys_ffmpeg" ]; then
+      ln -sf "$sys_ffmpeg" "$VENV/bin/ffmpeg"
+    else
+      ln -sf "$("$PY" -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" "$VENV/bin/ffmpeg"
+    fi
+  fi
+  export PATH="$VENV/bin:$PATH"
+  if [ "$DEVICE" = cuda ]; then
+    # CTranslate2 (recognition) loads cuDNN and cuBLAS by name; torch brings them as pip packages, outside the
+    # library path — without this whisperx fails with "Unable to load libcudnn_ops.so.9"
+    local lib nv="$VENV/lib/python3.11/site-packages/nvidia"
+    for lib in "$nv/cudnn/lib" "$nv/cublas/lib"; do
+      [ ! -d "$lib" ] || LD_LIBRARY_PATH="$lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    done
+    export LD_LIBRARY_PATH
+  fi
+}
+
+cuda_works() {  # both torch (diarization, word alignment) and CTranslate2 (recognition) see the GPU
+  "$PY" -c 'import sys, torch, ctranslate2
+sys.exit(not (torch.cuda.is_available() and ctranslate2.get_cuda_device_count() > 0))' 2>/dev/null
+}
+
+# Models: models/ → Hugging Face cache → download (scripts/models.py). Sets WHISPER_PATH and ALIGN_PATH;
+# after that everything is local, so recognition and diarization run with HF_HUB_OFFLINE=1 (only they: setup
+# downloads the models of several languages one after another).
+ensure_models() {
+  local out
+  if is_mlx && ! apple_silicon; then
+    die "$WHISPER_MODEL runs only on a Mac with Apple Silicon (M1 and newer); choose large-v3: ./transcribe setup"
+  fi
+  ALIGN_PATH=""  # mlx gives word timestamps itself and has no alignment model
+  out="$("$PY" -I "$S/models.py" ensure --whisper "$WHISPER_MODEL" --language "$1")" || exit $?
+  eval "$(printf '%s\n' "$out" | grep -E '^(WHISPER_PATH|ALIGN_PATH)=')"
+}
+
+# progress_line <percent> <text>: one line redrawn in place, like the model download bar
+progress_line() {
+  local width=24 fill=$(( $1 * 24 / 100 )) bar="" i
+  for ((i = 0; i < width; i++)); do
+    if [ "$i" -lt "$fill" ]; then bar="${bar}█"; else bar="${bar}░"; fi
+  done
+  printf '\r\033[K\033[1;34m[transcribe]\033[0m   [%s] %3d%%  %s' "$bar" "$1" "$2" >&2
+}
+
+fmt_time() { printf '%d:%02d' $(($1 / 60)) $(($1 % 60)); }
+
+# Meeting data folders must not end up in git by accident: drop a .gitignore with "*" into them.
+fingerprint() {  # name, size and a hash of the first and last MiB: tells recordings apart without reading GBs
+  local sum
+  sum="$( { head -c 1048576 "$1"; tail -c 1048576 "$1"; } | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-16)"
+  printf '%s %s bytes %s' "$(basename "$1")" "$(wc -c < "$1" | tr -d ' ')" "$sum"
+}
+
+# check_source <video> <work>: the work folder belongs to one recording, results of another one must not be
+# mixed in silently (asr and frames both write there)
+check_source() {
+  local now old
+  now="$(fingerprint "$1")"
+  if [ -f "$2/source.txt" ]; then
+    old="$(cat "$2/source.txt")"
+    case "$now" in
+      "$old"|"$old "*) ;;  # same recording; "*": written by an older version without the hash
+      *) die "$2 holds results of another recording ($old) — use a new output folder or delete $2" ;;
+    esac
+  fi
+  printf '%s\n' "$now" > "$2/source.txt"
+}
+
+lock_work() {  # one asr at a time per work folder; a lock of a process that is gone is taken over
+  local lock="$1/.asr.lock" pid
+  if ! mkdir "$lock" 2>/dev/null; then
+    pid="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      die "another asr (pid $pid) is working in $1 — wait for it or stop it"
+    fi
+    rm -rf "$lock"; mkdir "$lock" || die "cannot lock $1"
+  fi
+  echo $$ > "$lock/pid"
+  LOCK_DIR="$lock"
+  trap '[ -z "${LOCK_DIR:-}" ] || rm -rf "$LOCK_DIR"' EXIT
+}
+
+guard_dir() {
+  mkdir -p "$1"
+  [ -e "$1/.gitignore" ] || printf '%s\n' "# meeting data: do not commit to shared repositories" "*" > "$1/.gitignore"
+}
+
+usage() {
+  cat <<EOF
+Usage: ./transcribe <command> [arguments]
+
+  auto <video> <out_dir> [--title T] [--date YYYY-MM-DD] [--language ru] [--summary claude|codex|opencode|local|api]
+       [--no-summary] [--no-names]  everything in one go, no manual steps. Speaker names come from the screen
+                      ("Speaking: …" badges, read on this machine) and, with a summary backend, from introductions
+                      in the text; a speaker without clear evidence stays SPEAKER_xx. The summary backend chosen in
+                      setup is used unless --summary or --no-summary says otherwise
+
+Step by step:
+  asr <video> <work> [--language ru] [--max-speakers 10]
+                      audio → speech recognition and speaker diarization in parallel
+  frames <video> <work> [--threshold 0.3] [--min-gap 15]
+                      screenshot candidates + contact_NN.jpg sheets to review
+  badges <video> <work> [--crop W:H:X:Y] [--share-start 70] [--per-speaker 6] [--probe T]
+                      crops of the "who is speaking" badge per speaker → work/badges/
+  strip <video> <work> <start_s> [--duration 40] [--crop W:H:X:Y]
+                      one badge crop per second for a disputed fragment
+  merge <work> <out_dir> --title T --date D [--speakers speakers.json] [--language ru] [--raw-speakers]
+                      build transcript.md, transcript_with_speakers.txt, screenshots/
+  summarize <out_dir> --llm claude|codex|opencode|local|api [--model M]
+                      add a summary via Claude Code, Codex, OpenCode (--model provider/model), a local model
+                      (Ollama) or an OpenAI-compatible API;
+                      rebuilds HTML and PDF
+  export <out_dir> [--no-pdf]
+                      rebuild HTML (images embedded) and PDF from transcript.md, e.g. after manual edits
+
+Maintenance:
+  setup [--language en,ru] [--model mlx-large-v3-turbo|large-v3|…] [--device cpu|cuda] [--summary claude|codex|opencode|local|api|none] [--skill|--no-skill] [--yes]
+                          install the environment and download models; asks interactively without flags
+  doctor [--language ru]  show what is installed and where the models are; installs and downloads nothing
+  install-skill           register SKILL.md for agents (Claude Code, Codex, OpenCode, Gemini CLI, Cursor, Cline, …)
+  uninstall-skill         remove what install-skill wrote
+
+All environment variables: README, "Settings".
+EOF
+}
+
+parse_language() {  # --language X from doctor arguments
+  LANGUAGE="$DEFAULT_LANGUAGE"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --language) LANGUAGE="$2"; shift 2 ;;
+      *) die "unknown argument $1" ;;
+    esac
+  done
+}
+
+ask() {  # ask "question" "default" → REPLY
+  local answer
+  printf '\033[1m%s\033[0m [%s]: ' "$1" "$2" >&2
+  IFS= read -r answer || answer=""
+  REPLY="${answer:-$2}"
+}
+
+confirm() {  # confirm "question" → REPLY = yes|no; Enter means yes
+  local answer
+  while :; do
+    printf '\033[1m%s\033[0m [Y/n]: ' "$1" >&2
+    IFS= read -r answer || answer=""
+    case "$answer" in
+      ""|[yY]|[yY][eE][sS]) REPLY=yes; return ;;
+      [nN]|[nN][oO]) REPLY=no; return ;;
+    esac
+  done
+}
+
+ask_secret() {  # ask_secret "question" "hint" → REPLY, typed without echo
+  local answer
+  printf '\033[1m%s\033[0m [%s]: ' "$1" "$2" >&2
+  IFS= read -rs answer || answer=""
+  printf '\n' >&2
+  REPLY="$answer"
+}
+
+spin() {  # spin "message" command... → runs the command with a spinner on the terminal; returns its exit status
+  local msg="$1" pid i=0 rc=0 tty="" frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+  shift
+  "$@" & pid=$!
+  if [ ! -t 2 ]; then wait "$pid" || rc=$?; return $rc; fi
+  # keys pressed while waiting would print over the spinner; Ctrl+C must give the terminal back as it was
+  if [ -t 0 ]; then tty="$(stty -g 2>/dev/null || true)"; stty -echo 2>/dev/null || true; fi
+  trap 'kill "$pid" 2>/dev/null; [ -z "$tty" ] || stty "$tty" 2>/dev/null; printf "\r\033[2K\033[?25h" >&2; exit 130' INT TERM
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r\033[2K  \033[1;36m%s\033[0m %s' "${frames[i % 10]}" "$msg" >&2
+    i=$((i + 1)); sleep 0.1
+  done
+  wait "$pid" || rc=$?
+  trap - INT TERM
+  [ -z "$tty" ] || stty "$tty" 2>/dev/null || true
+  printf '\r\033[2K' >&2
+  return $rc
+}
+
+# choose "question" <selected index> option... → REPLY = index of the chosen option. Arrows or j/k, Enter.
+choose() {
+  local title="$1" sel="$2" key i n
+  shift 2
+  n=$#
+  local opts=("$@")
+  printf '\033[1m%s\033[0m (↑/↓, Enter)\n' "$title" >&2
+  printf '\033[?25l' >&2
+  trap 'printf "\033[?25h" >&2; exit 130' INT TERM
+  while :; do
+    for ((i = 0; i < n; i++)); do
+      if [ "$i" -eq "$sel" ]; then
+        printf '\033[2K  \033[1;36m> %s\033[0m\n' "${opts[$i]}" >&2
+      else
+        printf '\033[2K    %s\n' "${opts[$i]}" >&2
+      fi
+    done
+    IFS= read -rsn1 key || key=""
+    case "$key" in
+      $'\x1b')
+        IFS= read -rsn2 -t 1 key || true
+        case "$key" in
+          '[A') sel=$(((sel - 1 + n) % n)) ;;
+          '[B') sel=$(((sel + 1) % n)) ;;
+        esac ;;
+      k) sel=$(((sel - 1 + n) % n)) ;;
+      j) sel=$(((sel + 1) % n)) ;;
+      '') break ;;
+    esac
+    printf '\033[%dA' "$n" >&2
+  done
+  printf '\033[?25h' >&2
+  trap - INT TERM
+  REPLY="$sel"
+}
+
+save_config() {  # save_config VAR value — written as VAR=${VAR:-value}, so an explicit environment variable still wins
+  local var="$1" value="$2" q tmp
+  q="$(printf '%q' "$value")"
+  # the file may hold an API key: the new copy is private from its first byte, then replaces the old one
+  tmp="$(umask 077; mktemp "$CONFIG.XXXXXX")" || die "cannot write $CONFIG"
+  { [ ! -f "$CONFIG" ] || grep -v "^$var=" "$CONFIG" || true; printf '%s=${%s:-%s}\n' "$var" "$var" "$q"; } > "$tmp"
+  mv "$tmp" "$CONFIG"
+}
+
+ram_gb() {  # installed memory in whole GB, 0 if unknown
+  local kib  # in KiB: mawk on Debian/Ubuntu prints bytes as 8.3e+09, which bash arithmetic rejects
+  kib="$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1 / 1024}' || true)"
+  [ -n "$kib" ] || kib="$(awk '/^MemTotal:/ {printf "%d", $2}' /proc/meminfo 2>/dev/null || true)"
+  case "$kib" in ""|*[!0-9]*) kib=0 ;; esac
+  echo $(( kib / 1048576 ))
+}
+
+have_cli() { command -v "$1" >/dev/null || [ -x "$HOME/.local/bin/$1" ]; }
+
+# summary_question → sets summary of cmd_setup: claude|codex|opencode|local|api|none
+summary_question() {
+  local ram keys=() labels=() fits=1
+  ram="$(ram_gb)"
+  [ "$ram" -eq 0 ] || [ "$ram" -ge "$LOCAL_LLM_RAM_GB" ] || fits=""
+  # one line per option, under 80 columns: a wrapped line breaks the redraw of the menu
+  if have_cli claude; then keys+=(claude); labels+=("Claude Code   best quality; the text goes to Anthropic"); fi
+  if have_cli codex; then keys+=(codex); labels+=("Codex         the text goes to OpenAI"); fi
+  if have_cli opencode; then keys+=(opencode); labels+=("OpenCode      a model you set up in OpenCode"); fi
+  keys+=(local)
+  if [ -n "$fits" ]; then
+    labels+=("local model   $LOCAL_LLM in Ollama, offline; $LOCAL_LLM_GB GB, needs $LOCAL_LLM_RAM_GB GB RAM")
+  else
+    labels+=("! local model $LOCAL_LLM: needs $LOCAL_LLM_RAM_GB GB RAM, this machine has $ram GB")
+  fi
+  keys+=(api); labels+=("API           OpenAI-compatible: OpenAI, OpenRouter, LM Studio, …")
+  keys+=(none); labels+=("none          transcript only; a summary later via summarize")
+  [ "$ram" -eq 0 ] || echo "This machine has $ram GB of RAM. The local model is a bit less accurate than Claude or Codex." >&2
+  while :; do
+    choose "Summary of each meeting (decisions, next steps, topics)" 0 "${labels[@]}"
+    summary="${keys[$REPLY]}"
+    if [ "$summary" = api ]; then
+      api_question && break
+      continue
+    fi
+    if [ "$summary" = opencode ]; then
+      opencode_question && break
+      continue
+    fi
+    [ "$summary" = local ] && [ -z "$fits" ] || break
+    echo "  The $LOCAL_LLM model needs ~$LOCAL_LLM_RAM_GB GB of RAM and this machine has $ram GB: it would not load or" >&2
+    echo "  would crawl. Smaller local models write summaries with invented tasks and wrong owners, so the tool does" >&2
+    echo "  not offer them. Use Claude Code, Codex or any big model through an API (OpenAI, OpenRouter, a company" >&2
+    echo "  gateway): ./transcribe summarize <out_dir> --llm api, see README \"Summary\"." >&2
+  done
+}
+
+# ensure_local_llm: Ollama installed and running, the summary model downloaded
+api_failed() {  # api_failed "message" → always 1; the setup goes back to the summary menu
+  printf '\033[1;31m  ✗ %s\033[0m\n' "$1" >&2
+  printf '  Enter — back to the choice of the summary: ' >&2
+  IFS= read -r _ || true
+  return 1
+}
+
+api_curl() {  # api_curl <out file> curl-args... → body in <out>, HTTP code in <out>.code, curl error in <out>.err
+  local out="$1"; shift
+  curl -sS -o "$out" -w '%{http_code}' "$@" > "$out.code" 2> "$out.err"
+}
+
+curl_error() { sed 's/^curl: ([0-9]*) //' "$1.err" | head -1; }
+
+# api_question: server address, key and model of an OpenAI-compatible API, checked with a real request.
+# Sets api_url, api_key, api_model of cmd_setup; returns 1 when the server is unreachable or refuses.
+api_question() {
+  local url key model code n i sel=0 tmp
+  echo "  Any server with the OpenAI Chat Completions API: https://api.openai.com/v1, https://openrouter.ai/api/v1," >&2
+  echo "  LM Studio http://localhost:1234/v1, Ollama http://localhost:11434/v1, vLLM, a company gateway." >&2
+  ask "Server URL" "${MT_LLM_BASE_URL:-https://api.openai.com/v1}"
+  url="${REPLY%/}"
+  case "$url" in http://*|https://*) ;; *) api_failed "the address must start with http:// or https://"; return 1 ;; esac
+  local host="${url#*://}"; host="${host%%/*}"; host="${host%:*}"
+  if [ -n "${MT_LLM_API_KEY:-}" ]; then
+    ask_secret "API key, not shown while typing" "Enter keeps the saved key"
+    key="${REPLY:-$MT_LLM_API_KEY}"
+  else
+    ask_secret "API key, not shown while typing" "Enter — no key, for a local server"
+    key="$REPLY"
+  fi
+  case "$url" in
+    https://*|http://localhost[:/]*|http://127.0.0.1[:/]*|http://\[::1\][:/]*) ;;
+    *) if [ -n "$key" ]; then
+         api_failed "$host over plain http: the key would cross the network unencrypted — use https"; return 1
+       fi ;;
+  esac
+  tmp="$(mktemp -d)" || { api_failed "cannot create a temporary folder"; return 1; }
+  # the key goes to curl in a file, not on the command line, where other users of the machine could see it
+  (umask 077; if [ -n "$key" ]; then printf 'Authorization: Bearer %s\n' "$key"; fi > "$tmp/headers")
+  if ! spin "connecting to $url" api_curl "$tmp/models" -m 20 -H @"$tmp/headers" "$url/models"; then
+    api_failed "no connection to $url: $(curl_error "$tmp/models")"; rm -rf "$tmp"; return 1
+  fi
+  code="$(cat "$tmp/models.code")"
+  case "$code" in
+    401|403) api_failed "$url rejected the key (HTTP $code)"; rm -rf "$tmp"; return 1 ;;
+    2*) ;;
+    *) code="" ;;  # some gateways have no /models: the model is typed and checked by the request below
+  esac
+  local ids=()
+  if [ -n "$code" ]; then
+    while IFS= read -r i; do ids+=("$i"); done < <(grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp/models" \
+      | sed 's/.*"\([^"]*\)"$/\1/' | sort -u)
+  fi
+  n=${#ids[@]}
+  if [ "$n" -gt 0 ] && [ "$n" -le 12 ]; then
+    for i in "${!ids[@]}"; do [ "${ids[$i]}" != "${MT_LLM_MODEL:-}" ] || sel=$i; done
+    choose "Model for the summary ($n on the server)" "$sel" "${ids[@]}"
+    model="${ids[$REPLY]}"
+  else
+    [ "$n" -eq 0 ] || echo "  $n models on the server, for example: ${ids[@]:0:4}" >&2
+    ask "Model id" "${MT_LLM_MODEL:-${ids[0]:-gpt-5-mini}}"
+    model="$REPLY"
+    if [ "$n" -gt 0 ] && ! printf '%s\n' "${ids[@]}" | grep -qxF -- "$model"; then
+      echo "  $model is not in the server's list — checking it anyway" >&2  # gateways do not list everything
+    fi
+  fi
+  case "$model" in
+    ""|*[!A-Za-z0-9._:/@+-]*) api_failed "unusual model id '$model': letters, digits and . _ : / @ + - only"
+                              rm -rf "$tmp"; return 1 ;;
+  esac
+  # a real request: the model may be listed but not loaded, not paid for or not allowed for this key
+  printf '{"model": "%s", "messages": [{"role": "user", "content": "Reply with the word OK."}]}' "$model" \
+    > "$tmp/body"
+  if ! spin "checking $model (a local model may take a minute to load)" api_curl "$tmp/answer" -m 180 \
+      -H @"$tmp/headers" -H 'Content-Type: application/json' -d @"$tmp/body" "$url/chat/completions"; then
+    api_failed "$model did not answer: $(curl_error "$tmp/answer")"; rm -rf "$tmp"; return 1
+  fi
+  code="$(cat "$tmp/answer.code")"
+  case "$code" in
+    401|403) api_failed "$url rejected the key for $model (HTTP $code): $(head -c 200 "$tmp/answer" | tr '\n' ' ')"
+             rm -rf "$tmp"; return 1 ;;
+  esac
+  if [ "${code#2}" = "$code" ] || ! grep -q '"content"[[:space:]]*:[[:space:]]*"[^"]' "$tmp/answer"; then
+    api_failed "$model: HTTP $code $(head -c 300 "$tmp/answer" | tr '\n' ' ')"; rm -rf "$tmp"; return 1
+  fi
+  rm -rf "$tmp"
+  printf '\033[1;32m  ✓\033[0m %s answers at %s\n' "$model" "$url" >&2
+  api_url="$url" api_key="$key" api_model="$model"
+}
+
+opencode_bin() { command -v opencode || echo "$HOME/.local/bin/opencode"; }
+
+# opencode_question: provider, then model. Sets oc_model of cmd_setup; the model answers a test request after the
+# install (cmd_setup). The list comes from the same isolated setup the summary runs in once the Python env is
+# there; before the first install — from OpenCode itself, without the project config, as close as it gets.
+opencode_question() {
+  local tmp n i sel=0 p current="${MT_OPENCODE_MODEL:-}" providers=() models=()
+  tmp="$(mktemp -d)" || { api_failed "cannot create a temporary folder"; return 1; }
+  if [ -x "$PY" ]; then
+    set -- "$PY" -I "$S/summarize.py" --list --llm opencode
+  else
+    set -- env OPENCODE_DISABLE_PROJECT_CONFIG=1 "$(opencode_bin)" models --pure
+  fi
+  if ! spin "reading the models of your OpenCode" sh -c 'out="$1"; shift; "$@" > "$out" 2> "$out.err"' _ "$tmp/models" "$@"; then
+    api_failed "cannot list the OpenCode models: $(grep -v '^[[:space:]]*$' "$tmp/models.err" | tail -1)"
+    rm -rf "$tmp"; return 1
+  fi
+  grep -E '^[A-Za-z0-9._-]+/[^[:space:]]+$' "$tmp/models" > "$tmp/ids" || true
+  if [ ! -s "$tmp/ids" ]; then
+    api_failed "OpenCode has no models: log in to a provider with opencode auth login"; rm -rf "$tmp"; return 1
+  fi
+  while IFS= read -r p; do providers+=("$p"); done < <(cut -d/ -f1 "$tmp/ids" | awk '!seen[$0]++')
+  p="${providers[0]}"
+  if [ "${#providers[@]}" -gt 1 ]; then
+    for i in "${!providers[@]}"; do [ "${providers[$i]}" != "${current%%/*}" ] || sel=$i; done
+    choose "OpenCode provider (the meeting text goes to it)" "$sel" "${providers[@]}"
+    p="${providers[$REPLY]}"
+  fi
+  while IFS= read -r i; do models+=("$i"); done < <(awk -F/ -v p="$p" '$1 == p' "$tmp/ids")
+  rm -rf "$tmp"
+  n=${#models[@]} sel=0
+  # the saved model is the default only where it is on the list
+  printf '%s\n' "${models[@]}" | grep -qxF -- "$current" || current="${models[0]}"
+  # the menu redraws in place: it has to fit on the screen
+  if [ "$n" -le $(( $(tput lines 2>/dev/null || echo 24) - 4 )) ]; then
+    for i in "${!models[@]}"; do [ "${models[$i]}" != "$current" ] || sel=$i; done
+    choose "Model for the summary ($n at $p)" "$sel" "${models[@]}"
+    oc_model="${models[$REPLY]}"
+  else
+    echo "  $n models at $p, for example: ${models[*]:0:4}" >&2
+    ask "Model (provider/model)" "$current"
+    oc_model="$REPLY"
+    printf '%s\n' "${models[@]}" | grep -qxF -- "$oc_model" || { api_failed "$oc_model is not in opencode models"; return 1; }
+  fi
+}
+
+ensure_local_llm() {
+  if ! command -v ollama >/dev/null; then
+    if command -v brew >/dev/null; then
+      log "installing Ollama (brew install ollama) for the local summary model"
+      brew install ollama >&2 || die "brew install ollama failed; install it from https://ollama.com/download"
+    else
+      die "the local summary needs Ollama: install it from https://ollama.com/download, then run setup again"
+    fi
+  fi
+  if ! curl -fsS "${OLLAMA_HOST:-http://localhost:11434}/api/tags" >/dev/null 2>&1; then
+    log "starting the Ollama server (ollama serve, log: $ROOT/.ollama.log)"
+    nohup ollama serve > "$ROOT/.ollama.log" 2>&1 &
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 1
+      curl -fsS "${OLLAMA_HOST:-http://localhost:11434}/api/tags" >/dev/null 2>&1 && break
+    done
+  fi
+  if ollama list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -qx "$LOCAL_LLM"; then
+    log "summary model $LOCAL_LLM: present"
+  else
+    log "downloading the summary model $LOCAL_LLM ($LOCAL_LLM_GB GB, once; an interrupted download resumes)"
+    ollama pull "$LOCAL_LLM" || die "could not download $LOCAL_LLM: check the network and run setup again"
+  fi
+}
+
+setup_questions() {  # sets languages, model, summary, skill of cmd_setup
+  echo "meeting-transcribe setup. Enter keeps the value in brackets." >&2
+  ask "Meeting languages, comma-separated; the first one is the default (en, ru, de, …)" "$SETUP_LANGUAGES"
+  languages="${REPLY// /}"
+  local names=(large-v3 large-v3-turbo medium small)
+  local labels=("large-v3            best quality, 3.1 GB"
+                "large-v3-turbo      faster, slightly less accurate, 1.6 GB"
+                "medium              1.5 GB, faster, noticeably less accurate"
+                "small               0.5 GB, draft quality")
+  if apple_silicon; then  # one line under 80 columns: a wrapped line breaks the redraw of the menu
+    names=(mlx-large-v3-turbo "${names[@]}")
+    labels=("mlx-large-v3-turbo  recommended for Apple Silicon: ~6× faster, 1.6 GB" "${labels[@]}")
+  fi
+  local gpu current="$WHISPER_MODEL"
+  gpu="$(nvidia_gpu)"
+  if [ -n "$gpu" ]; then  # "@cuda": the same model on the GPU, setup saves MT_DEVICE=cuda
+    names=(large-v3@cuda "${names[@]}")
+    labels=("large-v3 on GPU     recommended, NVIDIA GPU found: ~10× faster, 3.1 GB" "${labels[@]}")
+    if [ "$DEVICE" = cuda ] || [ -z "${MT_DEVICE:-}${MT_WHISPER_MODEL:-}" ]; then current="$WHISPER_MODEL@cuda"; fi
+  fi
+  local i sel=0 known=""
+  for i in "${!names[@]}"; do
+    if [ "${names[$i]}" = "$current" ]; then sel=$i; known=1; fi
+  done
+  if [ -z "$known" ]; then  # custom model from config.env: keep it as the first option
+    names=("$WHISPER_MODEL" "${names[@]}"); labels=("$WHISPER_MODEL  (current)" "${labels[@]}")
+  fi
+  choose "Speech recognition model" "$sel" "${labels[@]}"
+  model="${names[$REPLY]}"
+  device=cpu
+  case "$model" in *@cuda) model="${model%@cuda}"; device=cuda ;; esac
+  summary_question
+  if command -v claude >/dev/null || command -v codex >/dev/null || [ -x "$HOME/.local/bin/claude" ]; then
+    confirm "Register the skill for Claude Code and Codex (the agent names speakers and writes the summary)?"
+    if [ "$REPLY" = yes ]; then skill=yes; else skill=no; fi
+  fi
+}
+
+cmd_setup() {
+  local languages="" model="" device="" skill="" yes="" summary="" api_url="" api_key="" api_model="" oc_model=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --language) languages="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --device)
+        case "$2" in cpu|cuda) device="$2" ;; *) die "setup: --device cpu|cuda" ;; esac
+        shift 2 ;;
+      --summary)
+        case "$2" in claude|codex|opencode|local|api|none) summary="$2" ;; *) die "setup: --summary claude|codex|opencode|local|api|none" ;; esac
+        shift 2 ;;
+      --skill) skill=yes; shift ;;
+      --no-skill) skill=no; shift ;;
+      --yes|-y) yes=1; shift ;;
+      *) die "setup: unknown argument $1" ;;
+    esac
+  done
+  if [ -z "$languages$model$device$skill$yes$summary" ] && [ -t 0 ] && [ -t 2 ]; then
+    setup_questions  # before the install: answering questions after a long install is inconvenient
+  fi
+  languages="${languages:-$SETUP_LANGUAGES}"
+  if [ "$summary" = opencode ]; then
+    have_cli opencode || die "setup: --summary opencode needs OpenCode: https://opencode.ai"
+    oc_model="${oc_model:-${MT_OPENCODE_MODEL:-}}"
+    [ -n "$oc_model" ] || die "setup: which OpenCode model? MT_OPENCODE_MODEL=provider/model ./transcribe setup --summary opencode (the list: opencode models)"
+  fi
+  local hub="${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}"
+  log "plan: uv (if missing) → Python 3.11 and dependencies in $VENV (1.5 GB, with CUDA ~5 GB; a few minutes) →"
+  if [ -n "$model" ]; then WHISPER_MODEL="$model"; fi
+  if [ -n "$device" ]; then DEVICE="$device"; fi
+  if [ "$DEVICE" = cuda ] && is_mlx; then die "setup: $WHISPER_MODEL runs on the Apple GPU, not with --device cuda"; fi
+  [ "$DEVICE" != cuda ] || log "  recognition and diarization on the NVIDIA GPU: $(nvidia_gpu)"
+  if is_mlx; then
+    log "  recognition model $WHISPER_MODEL into $hub (1.6 GB, once; anything present is skipped)"
+  else
+    log "  recognition and alignment models for $languages into $hub (3–5 GB, once; anything present is skipped)"
+  fi
+  [ "$summary" != local ] || log "  summary model $LOCAL_LLM via Ollama ($LOCAL_LLM_GB GB, once)"
+  log "  after that everything works offline; what lives where: ./transcribe doctor"
+  ensure_env
+  [ -z "$model" ] || { WHISPER_MODEL="$model"; save_config MT_WHISPER_MODEL "$WHISPER_MODEL"; }
+  if [ "$DEVICE" = cuda ]; then
+    if ! driver_ok; then
+      log "NVIDIA driver $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1) is older than $CUDA_DRIVER, which CUDA 12.8 needs —"
+      log "  recognition stays on the CPU; update the driver and run ./transcribe setup again"
+      DEVICE=cpu device=cpu
+    elif cuda_works; then
+      log "NVIDIA GPU works: $(nvidia_gpu)"
+    else
+      log "the GPU is not usable (no NVIDIA driver or one older than CUDA 12 needs) — recognition stays on the CPU;"
+      log "  check nvidia-smi, update the driver and run ./transcribe setup again"
+      DEVICE=cpu device=cpu
+    fi
+  fi
+  [ -z "$device" ] || save_config MT_DEVICE "$DEVICE"
+  save_config MT_LANGUAGE "${languages%%,*}"
+  local lang
+  for lang in ${languages//,/ }; do
+    log "checking models for $lang"
+    ensure_models "$lang"
+  done
+  if [ "$(uname -s)" = Linux ]; then  # macOS reads the screen with the system OCR, nothing to download
+    log "downloading the screen-reading models for speaker names (EasyOCR, ~90 MB)"
+    "$PY" -I -c 'import os, easyocr; easyocr.Reader(["ru", "en"], gpu=False, verbose=False, model_storage_directory=os.environ.get("MT_EASYOCR_DIR"))' \
+      || log "the screen-reading models did not download: auto tries again, until then names come from the text only"
+  fi
+  [ "$summary" != local ] || ensure_local_llm
+  if [ "$summary" = opencode ]; then  # saved only when the model really answers through the isolated run
+    local ocerr; ocerr="$(mktemp)"
+    if ! spin "checking $oc_model through OpenCode" sh -c 'MT_LLM_TIMEOUT=180 "$1" -I "$2" --check --llm opencode --model "$3" > /dev/null 2> "$4"' \
+        _ "$PY" "$S/summarize.py" "$oc_model" "$ocerr"; then
+      local why; why="$(sed 's/^\[transcribe\] //' "$ocerr" | tail -1)"; rm -f "$ocerr"
+      die "$why
+  Everything else is installed; the summary setting was not changed. Fix OpenCode (opencode auth login) or choose
+  another model or summary: ./transcribe setup"
+    fi
+    rm -f "$ocerr"
+    log "OpenCode: $oc_model answers"
+    save_config MT_OPENCODE_MODEL "$oc_model"
+  fi
+  if [ "$summary" = none ]; then save_config MT_LLM ""; elif [ -n "$summary" ]; then save_config MT_LLM "$summary"; fi
+  [ -z "$summary" ] || MT_LLM="$summary"
+  if [ -n "$api_url" ]; then
+    save_config MT_LLM_BASE_URL "$api_url"
+    save_config MT_LLM_MODEL "$api_model"
+    if [ -n "$api_key" ]; then save_config MT_LLM_API_KEY "$api_key"; else save_config MT_LLM_API_KEY ""; fi
+    log "API: $api_model at $api_url${api_key:+, the key is in $CONFIG (readable only by you, not in git)}"
+  fi
+  [ "$skill" != yes ] || cmd_install_skill
+  log "environment and models are ready, everything works offline from now on"
+  log "settings: $CONFIG"
+  cmd_doctor "${languages%%,*}"
+  local first="${languages%%,*}" cli="$ROOT/transcribe"
+  [ "$cli" != "$PWD/transcribe" ] || cli="./transcribe"
+  echo >&2
+  echo "Ready. Transcribe a recording (language $first by default, other: --language <code>):" >&2
+  if [ -n "${MT_LLM:-}" ] && [ "${MT_LLM:-}" != none ]; then
+    echo "  $cli auto <recording.mp4> <out_dir>   # with a summary via $MT_LLM; --no-summary for the transcript only" >&2
+  else
+    echo "  $cli auto <recording.mp4> <out_dir>" >&2
+    echo "  $cli auto <recording.mp4> <out_dir> --summary claude   # plus a summary (claude, codex, opencode, local, api)" >&2
+  fi
+  if [ "$skill" = yes ]; then
+    echo "Or ask Claude Code / Codex: \"make a transcript of <recording.mp4>\" — the agent also names the speakers." >&2
+  fi
+  echo "All commands: $cli help" >&2
+}
+
+cmd_asr() {
+  local video="$1" work="$2"; shift 2
+  local language="$DEFAULT_LANGUAGE" max_speakers=10
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --language) language="$2"; shift 2 ;;
+      --max-speakers) max_speakers="$2"; shift 2 ;;
+      *) die "asr: unknown argument $1" ;;
+    esac
+  done
+  [ -f "$video" ] || die "no such file: $video"
+  ensure_models "$language"
+  guard_dir "$work"
+  check_source "$video" "$work"
+  lock_work "$work"
+  rm -f "$work/whisperx/audio.json" "$work/diarization.json"  # a failed run must not leave the old results in place
+  if [ ! -f "$work/audio.wav" ]; then  # written under another name first: an interrupted run leaves no half file
+    ffmpeg -v error -i "$video" -vn -ac 1 -ar 16000 -y -f wav "$work/audio.wav.part" \
+      || { rm -f "$work/audio.wav.part"; die "could not read the audio track of $video (ffmpeg error above)"; }
+    mv "$work/audio.wav.part" "$work/audio.wav"
+  fi
+  [ "$(wc -c < "$work/audio.wav")" -gt 32000 ] || die "$video has less than a second of audio"
+  local speed="~0.4× the recording length on Apple M-series, slower on most other CPUs" eta_div=5 eta_mul=2 batch=4
+  is_mlx && { speed="~0.1× the recording length"; eta_div=10; eta_mul=1; }
+  [ "$DEVICE" != cuda ] || { speed="on the NVIDIA GPU"; eta_div=20; eta_mul=1; batch=16; }
+  log "recognition ($language, $WHISPER_MODEL) and diarization run in parallel ($speed), logs: $work/whisperx.log, $work/diarize.log"
+  if is_mlx; then
+    HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 "$PY" -I "$S/asr_mlx.py" "$work/audio.wav" "$WHISPER_PATH" "$language" \
+      "$work/whisperx" > "$work/whisperx.log" 2>&1 &
+  else
+    HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 "$VENV/bin/whisperx" "$work/audio.wav" --model "$WHISPER_PATH" ${ALIGN_PATH:+--align_model "$ALIGN_PATH"} \
+      --language "$language" --device "$DEVICE" --compute_type "$(compute_type)" --batch_size "$batch" --output_format json \
+      --output_dir "$work/whisperx" --print_progress True > "$work/whisperx.log" 2>&1 &
+  fi
+  local w1=$!
+  # large-v3 in float16, the word alignment model and pyannote do not fit together into a small GPU: there
+  # diarization waits until recognition has finished
+  local after="" mib
+  if [ "$DEVICE" = cuda ]; then
+    mib="$(gpu_mib)"
+    if [ -n "$mib" ] && [ "$mib" -lt 12000 ]; then after=$w1; log "the GPU has ${mib} MiB: diarization runs after recognition"; fi
+  fi
+  # the same in RAM: both at once got killed for lack of memory on an 8 GB machine
+  local ram; ram="$(ram_gb)"
+  if [ -z "$after" ] && [ "$ram" -gt 0 ] && [ "$ram" -lt 16 ]; then
+    after=$w1; log "this machine has $ram GB of RAM: diarization runs after recognition, so that both fit"
+  fi
+  ( if [ -n "$after" ]; then while kill -0 "$after" 2>/dev/null; do sleep 1; done; fi
+    HF_HUB_OFFLINE=1 exec "$PY" -I "$S/diarize.py" "$work/audio.wav" "$work" --max-speakers "$max_speakers" \
+      --device "$DEVICE" ) > "$work/diarize.log" 2>&1 &
+  local w2=$!
+  # background jobs of a script do not get Ctrl+C themselves — stop them explicitly
+  trap 'kill $w1 $w2 2>/dev/null; wait $w1 $w2 2>/dev/null || true; printf "\n" >&2; log "interrupted"; exit 130' INT TERM
+  # progress: a bar redrawn in place on a terminal, a status line every 30 s in a log
+  local audio_s=$(( $(wc -c < "$work/audio.wav") / 32000 )) start=$SECONDS last=$SECONDS asr pct dpct tty=""
+  [ -t 2 ] && tty=1
+  while kill -0 $w1 2>/dev/null || kill -0 $w2 2>/dev/null; do
+    sleep 1 & wait $! || true
+    [ -n "$tty" ] || [ $((SECONDS - last)) -ge 30 ] || continue
+    last=$SECONDS
+    # whisperx stages → overall percent: speech detection 0–5, recognition 5–85, word alignment 85–100;
+    # mlx-whisper has one stage
+    read -r pct asr <<EOF2
+$(awk '/Transcribing with mlx/ {s="mlx"; v=0} /Performing voice activity/ {s="vad"; v=0} /Performing transcription/ {s="asr"; v=0}
+       /Performing alignment/ {s="align"; v=0} /^Progress: / {v=$2+0}
+       END {if (s=="mlx") print int(v), "recognizing"; else if (s=="vad") print 2, "detecting speech"; else if (s=="asr") print int(5+v*0.8), "recognizing";
+            else if (s=="align") print int(85+v*0.15), "aligning words"; else print 0, "loading model"}' \
+  "$work/whisperx.log" 2>/dev/null)
+EOF2
+    pct="${pct:-0}"; asr="${asr:-loading model}"
+    [ "$asr" = "loading model" ] || asr="$asr ${pct}%"
+    kill -0 $w1 2>/dev/null || { pct=100; asr="done"; }
+    dpct="$(awk '/^Progress: / {v=$2} END {print v+0}' "$work/diarize.log" 2>/dev/null)"
+    dpct="${dpct:-0}%"
+    kill -0 $w2 2>/dev/null || dpct=done
+    # both run in parallel; the bar shows the slower of the two
+    local took=$((SECONDS - start)) eta=$((audio_s * eta_mul / eta_div)) clock
+    if [ "$took" -lt "$eta" ]; then clock="$(fmt_time $took) of ~$(fmt_time $eta)"; else clock="$(fmt_time $took)"; fi
+    local status="text: $asr · speakers: $dpct · $clock"
+    local d="${dpct%\%}"; [ "$d" != done ] || d=100
+    [ "$d" -ge "$pct" ] || pct="$d"
+    if [ -n "$tty" ]; then
+      progress_line "$pct" "$status"
+    else
+      log "  $status"
+    fi
+  done
+  [ -z "$tty" ] || printf '\n' >&2
+  local rc1=0 rc2=0
+  wait $w1 || rc1=$?
+  wait $w2 || rc2=$?
+  trap - INT TERM
+  [ $rc1 -eq 0 ] || { tail -20 "$work/whisperx.log" >&2; die "speech recognition failed (exit $rc1), log: $work/whisperx.log"; }
+  [ $rc2 -eq 0 ] || { tail -20 "$work/diarize.log" >&2; die "diarization failed (exit $rc2), log: $work/diarize.log"; }
+  tail -1 "$work/diarize.log"
+}
+
+cmd_auto() {
+  local video="$1" out="$2"; shift 2
+  local title date language="$DEFAULT_LANGUAGE" summary="${MT_LLM:-}" names=1
+  title="$(basename "$video")"; title="${title%.*}"; date="$(date +%F)"
+  [ "$summary" != none ] || summary=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title) title="$2"; shift 2 ;;
+      --date) date="$2"; shift 2 ;;
+      --language) language="$2"; shift 2 ;;
+      --summary) summary="$2"; shift 2 ;;
+      --no-summary) summary=""; shift ;;
+      --no-names) names=""; shift ;;
+      *) die "auto: unknown argument $1" ;;
+    esac
+  done
+  guard_dir "$out"
+  local work="$out/.work"
+  cmd_asr "$video" "$work" --language "$language"
+  "$PY" -I "$S/frames.py" "$video" "$work"
+  "$PY" -I "$S/merge.py" "$work" "$out" --title "$title" --date "$date"
+  if [ -n "$names" ]; then
+    # names from the screen (OCR here) and, with a summary backend, from introductions in the text
+    "$PY" -I "$S/names_auto.py" "$video" "$work" "$out" ${summary:+--llm "$summary"} \
+      || log "naming the speakers failed (see above) — they stay SPEAKER_xx"
+    if [ -s "$work/names.json" ]; then
+      "$PY" -I "$S/merge.py" "$work" "$out" --title "$title" --date "$date" --speakers "$work/names.json"
+    fi
+  fi
+  if [ -n "$summary" ]; then
+    "$PY" -I "$S/summarize.py" "$out" --llm "$summary" && return  # rebuilds HTML and PDF itself
+    log "the summary failed (see above) — building the transcript without it"
+  fi
+  "$PY" -I "$S/export.py" "$out"
+}
+
+cmd_doctor() {
+  echo "uv:        $(command -v uv || { [ -x "$HOME/.local/bin/uv" ] && echo "$HOME/.local/bin/uv"; } || echo 'missing — setup installs it')"
+  if [ ! -x "$PY" ]; then
+    echo "env:       not installed — run ./transcribe setup"
+    echo "ffmpeg:    $(command -v ffmpeg || echo 'not in the system — the bundled one from imageio-ffmpeg will be used')"
+    return
+  fi
+  echo "python:    $("$PY" --version 2>&1)"
+  [ "$ROOT/uv.lock" -nt "$VENV/.synced" ] && echo "env:       outdated, updates on the next run"
+  echo "torch:     $(cat "$VENV/.synced" 2>/dev/null || echo "?") build"
+  echo "ffmpeg:    $(readlink "$VENV/bin/ffmpeg" || command -v ffmpeg || echo missing)"
+  echo "whisperx:  $("$PY" -c 'import importlib.metadata as m; print(m.version("whisperx"))')"
+  echo "pyannote:  $("$PY" -c 'import importlib.metadata as m; print(m.version("pyannote.audio"))')"
+  if apple_silicon; then
+    echo "mlx:       mlx-whisper $("$PY" -c 'import importlib.metadata as m; print(m.version("mlx-whisper"))' 2>/dev/null || echo missing) (recognition on the Apple GPU: MT_WHISPER_MODEL=mlx-large-v3-turbo)"
+  fi
+  "$PY" -I "$S/models.py" status --whisper "$WHISPER_MODEL" --language "$1"
+  echo "model:     speakers pyannote speaker-diarization-community-1 — bundled in the repo"
+  local ddev="${MT_DIARIZE_DEVICE:-$DEVICE}"
+  if [ -z "${MT_DIARIZE_DEVICE:-}" ] && [ "$DEVICE" = cpu ] && "$PY" -c 'import torch, sys; sys.exit(not torch.backends.mps.is_available())' 2>/dev/null; then
+    ddev="mps (Apple GPU)"
+  fi
+  local rdev="$DEVICE"; is_mlx && rdev="Apple GPU (mlx-whisper)"
+  if [ "$DEVICE" = cuda ]; then
+    rdev="cuda ($(nvidia_gpu), $(compute_type))"
+    cuda_works || rdev="$rdev — NOT USABLE: torch or CTranslate2 does not see the GPU, check nvidia-smi and the driver"
+  fi
+  echo "recognition model: $WHISPER_MODEL"
+  echo "devices:   recognition $rdev, diarization $ddev"
+  skill_status
+  echo "PDF:       fpdf2 $("$PY" -c 'import importlib.metadata as m; print(m.version("fpdf2"))'), no browser needed"
+}
+
+# Where agents look for skills: ~/.claude — Claude Code (also read by OpenCode, Copilot, Cursor, Amp, Goose);
+# ~/.agents — Codex, Gemini CLI, OpenCode, Cursor, Copilot, Goose, Amp, Roo Code; ~/.cline — Cline.
+SKILL_DIRS=".claude/skills .agents/skills .cline/skills"
+SKILL_MARK="<!-- installed by meeting-transcribe install-skill; remove: ./transcribe uninstall-skill -->"
+
+skill_text() {  # SKILL.md with this folder's paths, shell-quoted (a path may have spaces)
+  local text cli root
+  shopt -u patsub_replacement 2>/dev/null || true  # bash 5.2+: otherwise "&" in a path becomes the matched text
+  cli="$(printf '%q' "$ROOT/transcribe")"; root="$ROOT"
+  text="$(cat "$ROOT/SKILL.md")"
+  text="${text//\{\{TRANSCRIBE\}\}/$cli}"
+  text="${text//\{\{ROOT\}\}/$root}"
+  printf '%s\n\n%s\n' "$text" "$SKILL_MARK"
+}
+
+ours() {  # ours <SKILL.md>: written by install-skill (the mark, or the path of this folder from an older version)
+  grep -qF "$SKILL_MARK" "$1" || grep -qF "$ROOT/transcribe" "$1"
+}
+
+cmd_install_skill() {
+  local d f
+  for d in $SKILL_DIRS; do
+    f="$HOME/$d/meeting-transcribe/SKILL.md"
+    if [ -f "$f" ] && ! ours "$f"; then
+      log "skip $f: written by someone else, not by install-skill"; continue
+    fi
+    mkdir -p "$(dirname "$f")"
+    skill_text > "$f"
+    log "skill: $f"
+  done
+}
+
+cmd_uninstall_skill() {  # only the files install-skill wrote; anything else in those folders stays
+  local d f
+  for d in $SKILL_DIRS; do
+    f="$HOME/$d/meeting-transcribe/SKILL.md"
+    [ -f "$f" ] && ours "$f" || continue
+    rm -f "$f"; rmdir "$(dirname "$f")" 2>/dev/null || true
+    log "removed $f"
+  done
+}
+
+skill_status() {  # for doctor
+  local d f state="" text
+  text="$(skill_text)"
+  for d in $SKILL_DIRS; do
+    f="$HOME/$d/meeting-transcribe/SKILL.md"
+    [ -f "$f" ] || continue
+    if [ "$(cat "$f")" = "$text" ]; then state="$state ~/$d"; else state="$state ~/$d (outdated: ./transcribe install-skill)"; fi
+  done
+  echo "skill:    ${state:- not installed (./transcribe install-skill)}"
+}
+
+[ $# -gt 0 ] || { usage; exit 0; }
+cmd="$1"; shift
+# a typo or a missing argument must not start installing gigabytes first
+case "$cmd" in
+  -h|--help|help|install-skill|uninstall-skill|doctor|setup) ;;
+  asr|auto|frames|merge) [ $# -ge 2 ] || die "usage: $cmd <$( [ "$cmd" = merge ] && echo work || echo video )> <$( [ "$cmd" = auto ] && echo out_dir || { [ "$cmd" = merge ] && echo out_dir || echo work; } )> — see ./transcribe help" ;;
+  badges|strip|summarize|export) [ $# -ge 1 ] || die "usage: $cmd … — see ./transcribe help" ;;
+  *) usage; die "unknown command: $cmd" ;;
+esac
+case "$cmd" in
+  -h|--help|help) usage; exit 0 ;;
+  install-skill) cmd_install_skill; exit 0 ;;
+  uninstall-skill) cmd_uninstall_skill; exit 0 ;;
+  doctor) parse_language "$@"; cmd_doctor "$LANGUAGE"; exit 0 ;;
+  setup) cmd_setup "$@"; exit 0 ;;
+esac
+ensure_env
+case "$cmd" in
+  asr) cmd_asr "$@" ;;
+  auto) cmd_auto "$@" ;;
+  frames) guard_dir "$2"; check_source "$1" "$2"; "$PY" -I "$S/frames.py" "$@" ;;
+  badges) "$PY" -I "$S/badges.py" "$@" ;;
+  strip) "$PY" -I "$S/strip.py" "$@" ;;
+  merge) [ $# -ge 2 ] && guard_dir "$2"; "$PY" -I "$S/merge.py" "$@" ;;
+  summarize) "$PY" -I "$S/summarize.py" "$@" ;;
+  export) "$PY" -I "$S/export.py" "$@" ;;
+esac
