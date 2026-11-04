@@ -2,6 +2,10 @@
 
 # meeting-transcribe
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Python 3.11](https://img.shields.io/badge/python-3.11-3776ab)
+![macOS (Apple Silicon) · Linux](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29%20%C2%B7%20Linux-555)
+
 A transcript of a meeting recording, by speaker, with screenshots of the shared screen. Recognition and
 speaker separation run on your machine: the recording never leaves it. The summary is written by a local model
 or a large LLM of your choice: Claude, Codex, any model of your OpenCode or through an API. You get `transcript.md`, a plain

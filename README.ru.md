@@ -2,6 +2,10 @@
 
 # meeting-transcribe
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Python 3.11](https://img.shields.io/badge/python-3.11-3776ab)
+![macOS (Apple Silicon) · Linux](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29%20%C2%B7%20Linux-555)
+
 Транскрипт записи встречи по спикерам со скриншотами экрана. Распознавание и разделение по спикерам идут на этой
 машине: запись никуда не уходит. Саммари пишет локальная модель или большая LLM на выбор: Claude, Codex,
 любая модель из OpenCode или через API. Результат — `transcript.md`, текст с таймкодами, один HTML со вшитыми картинками,
