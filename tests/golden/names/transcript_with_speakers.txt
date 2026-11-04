@@ -1,0 +1,4 @@
+[00:00-00:02] Anna: Hello, my name is Anna.
+[00:03-00:06] SPEAKER_01: Did he actually break it? Yes I think so.
+[00:10-00:10] Anna: No.
+[00:14-00:16] SPEAKER_01: unaligned words here Okay 2026

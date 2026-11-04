@@ -437,7 +437,7 @@ api_question() {
     choose "Model for the summary ($n on the server)" "$sel" "${ids[@]}"
     model="${ids[$REPLY]}"
   else
-    [ "$n" -eq 0 ] || echo "  $n models on the server, for example: ${ids[@]:0:4}" >&2
+    [ "$n" -eq 0 ] || echo "  $n models on the server, for example: ${ids[*]:0:4}" >&2
     ask "Model id" "${MT_LLM_MODEL:-${ids[0]:-gpt-5-mini}}"
     model="$REPLY"
     if [ "$n" -gt 0 ] && ! printf '%s\n' "${ids[@]}" | grep -qxF -- "$model"; then
@@ -761,12 +761,12 @@ EOF2
     kill -0 $w1 2>/dev/null || { pct=100; asr="done"; }
     dpct="$(awk '/^Progress: / {v=$2} END {print v+0}' "$work/diarize.log" 2>/dev/null)"
     dpct="${dpct:-0}%"
-    kill -0 $w2 2>/dev/null || dpct=done
+    kill -0 $w2 2>/dev/null || dpct="done"
     # both run in parallel; the bar shows the slower of the two
     local took=$((SECONDS - start)) eta=$((audio_s * eta_mul / eta_div)) clock
     if [ "$took" -lt "$eta" ]; then clock="$(fmt_time $took) of ~$(fmt_time $eta)"; else clock="$(fmt_time $took)"; fi
     local status="text: $asr · speakers: $dpct · $clock"
-    local d="${dpct%\%}"; [ "$d" != done ] || d=100
+    local d="${dpct%\%}"; [ "$d" != "done" ] || d=100
     [ "$d" -ge "$pct" ] || pct="$d"
     if [ -n "$tty" ]; then
       progress_line "$pct" "$status"
@@ -786,7 +786,7 @@ EOF2
 
 cmd_auto() {
   local video="$1" out="$2"; shift 2
-  local title date language="$DEFAULT_LANGUAGE" summary="${MT_LLM:-}" names=1
+  local title date language="$DEFAULT_LANGUAGE" summary="${MT_LLM:-}" find_names=1
   title="$(basename "$video")"; title="${title%.*}"; date="$(date +%F)"
   [ "$summary" != none ] || summary=""
   while [ $# -gt 0 ]; do
@@ -796,7 +796,7 @@ cmd_auto() {
       --language) language="$2"; shift 2 ;;
       --summary) summary="$2"; shift 2 ;;
       --no-summary) summary=""; shift ;;
-      --no-names) names=""; shift ;;
+      --no-names) find_names=""; shift ;;
       *) die "auto: unknown argument $1" ;;
     esac
   done
@@ -805,7 +805,7 @@ cmd_auto() {
   cmd_asr "$video" "$work" --language "$language"
   "$PY" -I "$S/frames.py" "$video" "$work"
   "$PY" -I "$S/merge.py" "$work" "$out" --title "$title" --date "$date"
-  if [ -n "$names" ]; then
+  if [ -n "$find_names" ]; then
     # names from the screen (OCR here) and, with a summary backend, from introductions in the text
     "$PY" -I "$S/names_auto.py" "$video" "$work" "$out" ${summary:+--llm "$summary"} \
       || log "naming the speakers failed (see above) — they stay SPEAKER_xx"

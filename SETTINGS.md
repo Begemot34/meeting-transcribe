@@ -13,6 +13,7 @@
 | `MT_LLM` | from `setup` | summary backend for `auto`: `claude`, `codex`, `opencode`, `local`, `api`; empty — none |
 | `MT_LOCAL_MODEL` | `gemma4:26b` | Ollama model for `--llm local` |
 | `MT_OPENCODE_MODEL` | from `setup` | `provider/model` for `--llm opencode` |
+| `MT_CODEX_EFFORT` | `medium` | Codex reasoning effort for `--llm codex` |
 | `MT_LLM_TIMEOUT` | `1800` | seconds to wait for a summary |
 | `MT_LLM_TEMPERATURE` | — | temperature for `--llm api` (not sent by default: reasoning models reject it) |
 | `MT_LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API address for `--llm api` |
@@ -23,6 +24,7 @@
 | `HTTPS_PROXY` | — | proxy for model downloads |
 | `MT_DOWNLOAD_STALL_S` | `120` | seconds without progress before a download restarts |
 | `MT_DOWNLOAD_ATTEMPTS` | `5` | download attempts per model |
+| `MT_EASYOCR_DIR` | `~/.EasyOCR` | where EasyOCR models for names on screen are stored (Linux) |
 | `PYANNOTE_METRICS_ENABLED` | `false` | pyannote.audio's usage metrics to pyannote.ai; off, so nothing leaves the machine |
 
 `setup` saves its settings to `config.env`.

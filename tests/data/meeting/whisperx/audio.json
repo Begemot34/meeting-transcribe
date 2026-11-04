@@ -1,0 +1,122 @@
+{
+ "language": "en",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 4.0,
+   "text": "Hello, my name is Anna. Did he",
+   "words": [
+    {
+     "word": "Hello,",
+     "start": 0.0,
+     "end": 0.5
+    },
+    {
+     "word": "my",
+     "start": 0.6,
+     "end": 0.8
+    },
+    {
+     "word": "name",
+     "start": 0.9,
+     "end": 1.1
+    },
+    {
+     "word": "is",
+     "start": 1.2,
+     "end": 1.3
+    },
+    {
+     "word": "Anna.",
+     "start": 1.4,
+     "end": 2.0
+    },
+    {
+     "word": "Did",
+     "start": 3.0,
+     "end": 3.2
+    },
+    {
+     "word": "he",
+     "start": 3.3,
+     "end": 3.5
+    }
+   ]
+  },
+  {
+   "start": 3.6,
+   "end": 7.0,
+   "text": "actually break it? Yes I think so.",
+   "words": [
+    {
+     "word": "actually",
+     "start": 3.6,
+     "end": 4.0
+    },
+    {
+     "word": "break",
+     "start": 4.1,
+     "end": 4.4
+    },
+    {
+     "word": "it?",
+     "start": 4.5,
+     "end": 5.0
+    },
+    {
+     "word": "Yes",
+     "start": 5.05,
+     "end": 5.2
+    },
+    {
+     "word": "I",
+     "start": 5.3,
+     "end": 5.4
+    },
+    {
+     "word": "think",
+     "start": 5.5,
+     "end": 5.8
+    },
+    {
+     "word": "so.",
+     "start": 5.9,
+     "end": 6.2
+    }
+   ]
+  },
+  {
+   "start": 10.0,
+   "end": 13.0,
+   "text": "No.",
+   "words": [
+    {
+     "word": "No.",
+     "start": 10.0,
+     "end": 10.3
+    }
+   ]
+  },
+  {
+   "start": 14.0,
+   "end": 16.0,
+   "text": "unaligned words here",
+   "words": []
+  },
+  {
+   "start": 16.5,
+   "end": 18.0,
+   "text": "Okay 2026",
+   "words": [
+    {
+     "word": "Okay",
+     "start": 16.5,
+     "end": 16.9
+    },
+    {
+     "word": "2026"
+    }
+   ]
+  }
+ ]
+}

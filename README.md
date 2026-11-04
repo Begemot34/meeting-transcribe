@@ -159,6 +159,10 @@ Environment variables, `config.env` and the choice of the recognition model with
 - `install-skill` writes the path of this folder into the skill: after moving the folder, run it again (`doctor`
   shows an outdated copy); `uninstall-skill` removes it.
 
+## Development
+
+Linters, tests and CI: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Licenses
 
 The code in this repository is [MIT](LICENSE), except the `models/` folder. Every component with a license in

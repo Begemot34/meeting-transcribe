@@ -142,7 +142,7 @@ def ocr_engine():
 def pick_times(turns):
     """Up to PER_SPEAKER moments per speaker: the middle of their longest turns, spread over the meeting."""
     by = defaultdict(list)
-    for i, t in enumerate(turns):
+    for t in turns:
         s, e = t["start"], t["end"]
         if e - s < MIN_TURN:
             continue
@@ -182,6 +182,11 @@ def contrast(seen, s, kind):
     return sorted(scored, reverse=True)
 
 
+def top3(scored):
+    """The three best candidates for the report: "name seen-here/seen-elsewhere"."""
+    return ", ".join(f"{c} {p:.0%}/{q:.0%}" for _, p, q, c in scored[:3]) or "—"
+
+
 def decide(seen):
     """seen: {speaker: [(names, badge names) per frame]} → {speaker: name}, plus a report line per speaker."""
     best = {}
@@ -196,8 +201,7 @@ def decide(seen):
         # text that is not a badge needs counterexamples: with no other speaker's frames, a title that is always on
         # screen would look like a name
         text = contrast(seen, s, 0) if n >= MIN_FRAMES and others >= MIN_FRAMES else []
-        show = lambda sc: ", ".join(f"{c} {p:.0%}/{q:.0%}" for _, p, q, c in sc[:3]) or "—"
-        report.append(f"{s} ({n} frames): badge {show(badge)}; text {show(text)}")
+        report.append(f"{s} ({n} frames): badge {top3(badge)}; text {top3(text)}")
         text = [x for x in text if full_name(x[3])]
         for scored, seen_min in ((badge, SEEN), (text, SEEN_TEXT)):
             if scored and scored[0][1] >= seen_min and scored[0][2] <= ELSEWHERE and scored[0][0] >= LIFT:

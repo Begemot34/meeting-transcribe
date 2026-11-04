@@ -52,3 +52,28 @@ explicit = true
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+# Checks only (make check, CI): not installed by ./transcribe, which runs uv sync with the project dependencies.
+# Not named "dev" on purpose: uv installs the "dev" group by default.
+[dependency-groups]
+test = [
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+    # what the tests import: merge/export need Pillow, the PDF needs fpdf2 and the DejaVu font from matplotlib
+    "pillow",
+    "fpdf2",
+    "matplotlib",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# correctness, not style: pyflakes, syntax/statement errors, bugbear, pylint errors
+select = ["F", "E7", "E9", "B", "PLE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+addopts = "-ra"

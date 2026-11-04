@@ -51,7 +51,7 @@ def call(oc, args, env, cwd, what):
         r = subprocess.run([oc, *args], capture_output=True, text=True, encoding="utf-8", env=env, cwd=cwd,
                            timeout=60)
     except subprocess.TimeoutExpired:
-        raise Failed(f"`opencode {what}` did not finish in 60 s")
+        raise Failed(f"`opencode {what}` did not finish in 60 s") from None
     if r.returncode:
         raise Failed(f"`opencode {what}` failed: {(r.stderr or r.stdout).strip()[-300:]}")
     return r.stdout
@@ -64,7 +64,7 @@ def user_config(oc, cwd):
         paths = dict(ln.split(None, 1) for ln in call(oc, ["debug", "paths"], env, cwd, "debug paths").splitlines()
                      if len(ln.split(None, 1)) == 2)
     except ValueError:
-        raise Failed("unexpected answer of `opencode debug config` — is this OpenCode too new or too old?")
+        raise Failed("unexpected answer of `opencode debug config` — is this OpenCode too new or too old?") from None
     if not isinstance(config, dict) or not all(os.path.isabs(paths.get(k, "")) and Path(paths[k]).name == "opencode"
                                                for k in ("data", "cache", "state")):
         raise Failed("unexpected answer of `opencode debug config/paths` — is this OpenCode too new or too old?")
@@ -98,7 +98,7 @@ def check(oc, env, cwd):
     try:
         c = json.loads(call(oc, ["debug", "config", "--pure"], env, cwd, "debug config"))
     except ValueError:
-        raise Failed("unexpected answer of `opencode debug config` — is this OpenCode too new or too old?")
+        raise Failed("unexpected answer of `opencode debug config` — is this OpenCode too new or too old?") from None
     problems = []
     if c.get("mcp"):
         problems.append(f"MCP servers {sorted(c['mcp'])}")

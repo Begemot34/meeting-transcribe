@@ -188,21 +188,25 @@ def render_md(md_lines):
             flush_list()
             continue
         if s.startswith("### "):
-            flush_para(); flush_list()
+            flush_para()
+            flush_list()
             blocks.append([inline(s[4:]), []])
             out = blocks[-1][1]
         elif s.startswith("## "):
-            flush_para(); flush_list()
+            flush_para()
+            flush_list()
             title = inline(s[3:])
         elif re.match(r"^- ", s):
             flush_para()
             if not lst or lst[0] != "ul":
-                flush_list(); lst = ("ul", [])
+                flush_list()
+                lst = ("ul", [])
             lst[1].append(s[2:])
         elif re.match(r"^\d+\. ", s):
             flush_para()
             if not lst or lst[0] != "ol":
-                flush_list(); lst = ("ol", [])
+                flush_list()
+                lst = ("ol", [])
             lst[1].append(re.sub(r"^\d+\. ", "", s))
         elif lst and s.startswith("  "):
             lst[1][-1] += " " + s.strip()
@@ -211,7 +215,8 @@ def render_md(md_lines):
             if s.startswith("**") and para:  # "**MM:SS–MM:SS** — topic" starts a new paragraph
                 flush_para()
             para.append(s.strip())
-    flush_para(); flush_list()
+    flush_para()
+    flush_list()
     lead = "\n".join(blocks[0][1])
     return title, lead, [(h, "\n".join(body)) for h, body in blocks[1:]]
 

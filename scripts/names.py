@@ -82,12 +82,14 @@ def validate(answer, transcript_lines):
         # where the quote may stand: their own line (an introduction), or the neighbouring line of someone else
         # addressing them — but not an introduction of that someone else
         own, near = set(), set()
-        for i, (s, text) in enumerate(utts):
+        for i, (s, _) in enumerate(utts):
             if s == label:
                 own.add(i)
                 near.update(j for j in (i - 1, i + 1) if 0 <= j < len(utts) and utts[j][0] != label)
-        found = lambda i: f" {quote} " in f" {utts[i][1]} "  # whole words: "anna" is not inside "joanna"
-        if not any(found(i) for i in own) and not (any(found(i) for i in near) and not SELF.search(quote)):
+        padded = f" {quote} "  # whole words: "anna" is not inside "joanna"
+        in_own = any(padded in f" {utts[i][1]} " for i in own)
+        in_near = any(padded in f" {utts[i][1]} " for i in near)
+        if not in_own and not (in_near and not SELF.search(quote)):
             rejected[label] = f"{name}: the quote is not in their lines or someone addressing them next to them"
             continue
         kept[label] = name

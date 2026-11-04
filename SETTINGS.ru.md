@@ -13,6 +13,7 @@
 | `MT_LLM` | из `setup` | чем `auto` делает саммари: `claude`, `codex`, `opencode`, `local`, `api`; пусто — без саммари |
 | `MT_LOCAL_MODEL` | `gemma4:26b` | модель Ollama для `--llm local` |
 | `MT_OPENCODE_MODEL` | из `setup` | `провайдер/модель` для `--llm opencode` |
+| `MT_CODEX_EFFORT` | `medium` | глубина рассуждений Codex для `--llm codex` |
 | `MT_LLM_TIMEOUT` | `1800` | сколько секунд ждать саммари |
 | `MT_LLM_TEMPERATURE` | — | temperature для `--llm api` (по умолчанию не передаётся: reasoning-модели её не принимают) |
 | `MT_LLM_BASE_URL` | `https://api.openai.com/v1` | адрес OpenAI-совместимого API для `--llm api` |
@@ -23,6 +24,7 @@
 | `HTTPS_PROXY` | — | прокси для скачивания моделей |
 | `MT_DOWNLOAD_STALL_S` | `120` | через сколько секунд без прогресса перезапускать загрузку |
 | `MT_DOWNLOAD_ATTEMPTS` | `5` | сколько раз пробовать скачать модель |
+| `MT_EASYOCR_DIR` | `~/.EasyOCR` | где лежат модели EasyOCR для имён на экране (Linux) |
 | `PYANNOTE_METRICS_ENABLED` | `false` | метрики использования pyannote.audio в pyannote.ai; выключены, чтобы ничего не уходило с машины |
 
 Настройки `setup` — в `config.env`.
