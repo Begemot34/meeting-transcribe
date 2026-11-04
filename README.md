@@ -77,30 +77,21 @@ Example: 12 minutes of the panel "Idea jam: future dimensions of quality" at Wik
 The transcript, speaker names and summary were made by this tool with an agent; the text was not edited by
 hand, except for the names in the self-introductions.
 
-### Summary
+## How it works
 
-```bash
-./transcribe summarize out/grooming --llm local   # or claude, codex, opencode, api; rebuilds HTML and PDF
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-en-dark.png">
+  <img src="docs/pipeline-en-light.png" width="900" alt="Diagram: recording → speech recognition, diarization and screenshots in parallel → assembly → names → summary → HTML and PDF; each step shows the flags that change it">
+</picture>
 
-The summary rules are in [scripts/summary_prompt.md](scripts/summary_prompt.md): decisions with their authors,
-next steps as "who — what — deadline", risks, and the discussion by topic with timestamps.
+Each step shows the flags that change it; `setup` sets the defaults, all flags are in [Commands](#commands), the variables in [Settings](#settings).
 
-- `local`: `gemma4:26b` in [Ollama](https://ollama.com) on this machine, nothing leaves it. An 18.7 GB download,
-  needs 32 GB of RAM; `setup` installs Ollama with brew and downloads the model if you pick it;
-- `claude`: your [Claude Code](https://claude.com/claude-code);
-- `codex`: your [Codex CLI](https://github.com/openai/codex);
-- `opencode`: a model from your [OpenCode](https://opencode.ai): `setup` lists your providers and their models
-  and checks the chosen one with a test request;
-- `api`: any server with an OpenAI-compatible Chat Completions API: OpenAI, OpenRouter, a company gateway,
-  LM Studio, vLLM. If you pick it in `setup`, it asks for the server address and the key (typed without echo),
-  connects, lets you choose a model from the server's list and sends it one test request; if anything fails, it
-  shows the error and goes back to the summary menu. The address, model and key are saved to `config.env`
-  (readable only by you, ignored by git).
-
-With `claude`, `codex`, `opencode` and a remote `api` the meeting text goes to that service, with `local` it
-stays on the machine. The summary is made from `transcript.md`, so your manual fixes of names and terms in it
-reach the summary.
+- speech recognition: on a Mac with Apple Silicon [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
+  (whisper large-v3-turbo on the GPU); elsewhere [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
+  large-v3 + word alignment) on the CPU or an NVIDIA GPU;
+- speakers: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
+- screenshots: ffmpeg scene changes, with duplicates removed;
+- names on screen: Apple Vision on macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) on Linux, on this machine.
 
 ### Languages
 
@@ -118,21 +109,28 @@ For another language or your own alignment model, set `MT_ALIGN_MODEL=<wav2vec2 
 point it to a folder with such a model. For your own recognition model, set
 `MT_WHISPER_MODEL=<name, repo or folder>` in the CTranslate2 format.
 
-## How it works
+### Summary
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-en-dark.png">
-  <img src="docs/pipeline-en-light.png" width="900" alt="Diagram: recording → speech recognition, diarization and screenshots in parallel → assembly → names → summary → HTML and PDF; each step shows the flags that change it">
-</picture>
+Who writes the summary is chosen in `setup`, for one run with `auto --summary`, or afterwards with
+[`summarize`](#summarize). The summary rules are in [scripts/summary_prompt.md](scripts/summary_prompt.md):
+decisions with their authors, next steps as "who — what — deadline", risks, and the discussion by topic with
+timestamps.
 
-Each step shows the flags that change it; `setup` sets the defaults, all flags are in [Commands](#commands), the variables in [Settings](#settings).
+- `local`: `gemma4:26b` in [Ollama](https://ollama.com) on this machine, nothing leaves it. An 18.7 GB download,
+  needs 32 GB of RAM; `setup` installs Ollama with brew and downloads the model if you pick it;
+- `claude`: your [Claude Code](https://claude.com/claude-code);
+- `codex`: your [Codex CLI](https://github.com/openai/codex);
+- `opencode`: a model from your [OpenCode](https://opencode.ai): `setup` lists your providers and their models
+  and checks the chosen one with a test request;
+- `api`: any server with an OpenAI-compatible Chat Completions API: OpenAI, OpenRouter, a company gateway,
+  LM Studio, vLLM. If you pick it in `setup`, it asks for the server address and the key (typed without echo),
+  connects, lets you choose a model from the server's list and sends it one test request; if anything fails, it
+  shows the error and goes back to the summary menu. The address, model and key are saved to `config.env`
+  (readable only by you, ignored by git).
 
-- speech recognition: on a Mac with Apple Silicon [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-  (whisper large-v3-turbo on the GPU); elsewhere [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
-  large-v3 + word alignment) on the CPU or an NVIDIA GPU;
-- speakers: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
-- screenshots: ffmpeg scene changes, with duplicates removed;
-- names on screen: Apple Vision on macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) on Linux, on this machine.
+With `claude`, `codex`, `opencode` and a remote `api` the meeting text goes to that service, with `local` it
+stays on the machine. The summary is made from `transcript.md`, so your manual fixes of names and terms in it
+reach the summary.
 
 ## Commands
 

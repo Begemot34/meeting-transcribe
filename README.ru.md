@@ -75,29 +75,21 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 Транскрипт, имена спикеров и саммари сделаны этим инструментом с агентом, без ручных правок текста, кроме
 имён в самопредставлениях.
 
-### Саммари
+## Как устроено
 
-```bash
-./transcribe summarize out/grooming --llm local   # или claude, codex, opencode, api; пересоберёт HTML и PDF
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-ru-dark.png">
+  <img src="docs/pipeline-ru-light.png" width="900" alt="Схема: запись → распознавание речи, диаризация и скриншоты параллельно → сборка → имена → саммари → HTML и PDF; на каждом шаге — флаги, которые его меняют">
+</picture>
 
-Правила саммари — в [scripts/summary_prompt.md](scripts/summary_prompt.md): решения с авторами, шаги
-«кто — что — срок», риски, обсуждение по темам с таймкодами.
+На каждом шаге — флаги, которые его меняют; значения по умолчанию задаёт `setup`, все флаги — в [Командах](#команды), переменные — в [Настройках](#настройки).
 
-- `local` — `gemma4:26b` в [Ollama](https://ollama.com) на этой машине, ничего никуда не уходит. Скачивается
-  18.7 GB, нужно 32 GB оперативки; если выбрать в `setup`, он поставит Ollama через brew и скачает модель;
-- `claude` — твой [Claude Code](https://claude.com/claude-code);
-- `codex` — твой [Codex CLI](https://github.com/openai/codex);
-- `opencode` — модель из твоего [OpenCode](https://opencode.ai): `setup` покажет провайдеров и их модели и
-  проверит выбранную тестовым запросом;
-- `api` — любой сервер с OpenAI-совместимым Chat Completions API: OpenAI, OpenRouter, корпоративный шлюз,
-  LM Studio, vLLM. Если выбрать его в `setup`, он спросит адрес сервера и ключ (ввод не отображается),
-  подключится, даст выбрать модель из списка сервера и отправит ей проверочный запрос; если что-то не так —
-  покажет ошибку и вернёт к выбору саммари. Адрес, модель и ключ сохраняются в `config.env` (читать его можешь
-  только ты, в git он не попадает).
-
-С `claude`, `codex`, `opencode` и удалённым `api` текст встречи уходит в этот сервис, с `local` — остаётся на
-машине. Саммари делается из `transcript.md`, поэтому ручные правки имён и терминов в нём попадут в саммари.
+- распознавание: на Mac с Apple Silicon — [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
+  (whisper large-v3-turbo на GPU), на остальных — [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
+  large-v3 + выравнивание по словам) на CPU или NVIDIA GPU;
+- спикеры: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
+- скриншоты: смены сцены ffmpeg + отсев дублей;
+- имена на экране: Apple Vision на macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) на Linux, на этой машине.
 
 ### Языки
 
@@ -114,21 +106,26 @@ tl, tr, uk, ur, vi, zh. `./transcribe setup --language ru,en` скачает м�
 или путь к папке с такой моделью. Своя модель распознавания: `MT_WHISPER_MODEL=<имя, репозиторий или папка>`
 в формате CTranslate2.
 
-## Как устроено
+### Саммари
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-ru-dark.png">
-  <img src="docs/pipeline-ru-light.png" width="900" alt="Схема: запись → распознавание речи, диаризация и скриншоты параллельно → сборка → имена → саммари → HTML и PDF; на каждом шаге — флаги, которые его меняют">
-</picture>
+Кто пишет саммари, выбирается в `setup`, на один запуск — `auto --summary`, задним числом — командой
+[`summarize`](#summarize). Правила саммари — в [scripts/summary_prompt.md](scripts/summary_prompt.md): решения с
+авторами, шаги «кто — что — срок», риски, обсуждение по темам с таймкодами.
 
-На каждом шаге — флаги, которые его меняют; значения по умолчанию задаёт `setup`, все флаги — в [Командах](#команды), переменные — в [Настройках](#настройки).
+- `local` — `gemma4:26b` в [Ollama](https://ollama.com) на этой машине, ничего никуда не уходит. Скачивается
+  18.7 GB, нужно 32 GB оперативки; если выбрать в `setup`, он поставит Ollama через brew и скачает модель;
+- `claude` — твой [Claude Code](https://claude.com/claude-code);
+- `codex` — твой [Codex CLI](https://github.com/openai/codex);
+- `opencode` — модель из твоего [OpenCode](https://opencode.ai): `setup` покажет провайдеров и их модели и
+  проверит выбранную тестовым запросом;
+- `api` — любой сервер с OpenAI-совместимым Chat Completions API: OpenAI, OpenRouter, корпоративный шлюз,
+  LM Studio, vLLM. Если выбрать его в `setup`, он спросит адрес сервера и ключ (ввод не отображается),
+  подключится, даст выбрать модель из списка сервера и отправит ей проверочный запрос; если что-то не так —
+  покажет ошибку и вернёт к выбору саммари. Адрес, модель и ключ сохраняются в `config.env` (читать его можешь
+  только ты, в git он не попадает).
 
-- распознавание: на Mac с Apple Silicon — [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-  (whisper large-v3-turbo на GPU), на остальных — [whisperx](https://github.com/m-bain/whisperX) (faster-whisper
-  large-v3 + выравнивание по словам) на CPU или NVIDIA GPU;
-- спикеры: [pyannote](https://github.com/pyannote/pyannote-audio) `speaker-diarization-community-1`;
-- скриншоты: смены сцены ffmpeg + отсев дублей;
-- имена на экране: Apple Vision на macOS, [EasyOCR](https://github.com/JaidedAI/EasyOCR) на Linux, на этой машине.
+С `claude`, `codex`, `opencode` и удалённым `api` текст встречи уходит в этот сервис, с `local` — остаётся на
+машине. Саммари делается из `transcript.md`, поэтому ручные правки имён и терминов в нём попадут в саммари.
 
 ## Команды
 
