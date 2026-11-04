@@ -18,7 +18,7 @@
 
 `./transcribe help` prints the same list. `auto` is enough for most recordings; the other commands are its
 steps, for when you need to redo one of them by hand or when an agent works through [SKILL.md](SKILL.md).
-The `MT_*` variables in the defaults are described in [README, Settings](README.md#settings).
+The `MT_*` variables in the defaults are described in [SETTINGS.md](SETTINGS.md).
 
 ## auto
 

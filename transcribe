@@ -10,7 +10,7 @@ CONFIG="$ROOT/config.env"  # choices from the interactive setup
 # shellcheck source=/dev/null
 # exported: summarize.py reads MT_LLM_BASE_URL, MT_LLM_MODEL, MT_LLM_API_KEY, MT_OPENCODE_MODEL from the environment
 if [ -f "$CONFIG" ]; then set -a; . "$CONFIG"; set +a; fi
-# Apple Silicon: mlx-whisper on the GPU, ~6× faster, nearly the same quality (README "Speed"); elsewhere whisperx
+# Apple Silicon: mlx-whisper on the GPU, ~6× faster, nearly the same quality (SETTINGS.md, speed); elsewhere whisperx
 DEFAULT_WHISPER=large-v3
 [ "$(uname -sm)" != "Darwin arm64" ] || DEFAULT_WHISPER=mlx-large-v3-turbo
 WHISPER_MODEL="${MT_WHISPER_MODEL:-$DEFAULT_WHISPER}"
@@ -224,7 +224,7 @@ Maintenance:
   install-skill           register SKILL.md for agents (Claude Code, Codex, OpenCode, Gemini CLI, Cursor, Cline, …)
   uninstall-skill         remove what install-skill wrote
 
-All options: COMMANDS.md; environment variables: README, "Settings".
+All options: COMMANDS.md; environment variables: SETTINGS.md.
 EOF
 }
 
