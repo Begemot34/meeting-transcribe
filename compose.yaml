@@ -8,10 +8,12 @@ services:
   transcribe:
     image: localhost/meeting-transcribe:latest
     build:
-      # on a host whose uid/gid differ from 1000: podman build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t localhost/meeting-transcribe:latest
+      # on a host with another uid/gid run: env UID=$(id -u) GID=$(id -g) podman-compose build
       context: .
       args:
         DEVICE: cpu
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
     userns_mode: keep-id
     # label=disable: rootless single-user host + CDI GPU, per podman docs; on a shared host reconsider
     security_opt:
@@ -39,7 +41,6 @@ services:
       - MT_LLM_TIMEOUT
       - MT_LOCAL_MODEL
       - MT_OPENCODE_MODEL
-      - HF_HOME
       - HF_TOKEN
       - HTTPS_PROXY
       - HTTP_PROXY

@@ -60,11 +60,10 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 
 ## Запуск в контейнере
 
-На Linux с [podman](https://podman.io): собери образ, один раз скачай модели и транскрибируй из папки с
-записью.
+На Linux с [podman](https://podman.io): первый запуск сам соберёт образ и один раз скачает модели; транскрибируй
+из папки с записью.
 
 ```bash
-podman build --build-arg DEVICE=cpu -t localhost/meeting-transcribe:latest .
 ./transcribe-container setup --language ru,en --summary none --yes
 ./transcribe-container auto meeting.mp4 out/board-1105
 ```

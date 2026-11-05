@@ -22,6 +22,17 @@ def run_script(name, *args, cwd):
                           cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8")
 
 
+def run_cli(*args, cwd=None, env_extra=None):
+    """Runs a CLI (transcribe, transcribe-container) with a clean environment: a minimal PATH so an install
+    step that starts by mistake fails loudly, no MT_*/host leakage; captured output, a 30 s timeout, stdin
+    from DEVNULL. env_extra (HOME, PATH additions, MT_* …) is merged over the base environment."""
+    env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONUTF8": "1"}
+    if env_extra:
+        env |= {k: str(v) for k, v in env_extra.items()}
+    return subprocess.run([*map(str, args)], cwd=cwd, env=env, capture_output=True, text=True,
+                          encoding="utf-8", timeout=30, stdin=subprocess.DEVNULL)
+
+
 @pytest.fixture
 def meeting(tmp_path):
     """A copy of the synthetic meeting's work folder (whisperx/, diarization.json, frames.json, frames/) under a

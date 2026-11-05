@@ -91,7 +91,11 @@ ensure_env() {
   # the torch build follows the device (pyproject.toml extras): a change of MT_DEVICE re-syncs the environment
   local build=cpu size="~1.5 GB"
   if [ "$DEVICE" = cuda ]; then build=cuda; size="~5 GB with the CUDA libraries"; fi
-  if [ ! -x "$PY" ] || [ "$ROOT/uv.lock" -nt "$VENV/.synced" ] || [ "$(cat "$VENV/.synced" 2>/dev/null)" != "$build" ]; then
+  local synced
+  synced="$(cat "$VENV/.synced" 2>/dev/null || true)"
+  # the cuda build covers the CPU: keep it instead of re-syncing down to the cpu build
+  if ! { [ "$synced" = cuda ] && [ "$build" = cpu ]; } \
+      && { [ ! -x "$PY" ] || [ "$ROOT/uv.lock" -nt "$VENV/.synced" ] || [ "$synced" != "$build" ]; }; then
     log "installing dependencies ($build build of torch) into $VENV (first time: a few minutes, $size)…"
     (cd "$ROOT" && uv sync --frozen --extra "$build" --python 3.11 --compile-bytecode --quiet >&2) \
       || die "dependency install failed (uv sync), see the output above"
@@ -171,15 +175,19 @@ check_source() {
 }
 
 lock_work() {  # one asr at a time per work folder; a lock of a process that is gone is taken over
-  local lock="$1/.asr.lock" pid
+  local lock="$1/.asr.lock" pid host
   if ! mkdir "$lock" 2>/dev/null; then
     pid="$(cat "$lock/pid" 2>/dev/null || true)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    host="$(cat "$lock/host" 2>/dev/null || hostname)"
+    # on the host the hostname matches, so this behaves as before; every container gets a new hostname, so a
+    # lock left by a killed container (its $$ is 1 there) is taken over
+    if [ -n "$pid" ] && [ "$host" = "$(hostname)" ] && kill -0 "$pid" 2>/dev/null; then
       die "another asr (pid $pid) is working in $1 — wait for it or stop it"
     fi
     rm -rf "$lock"; mkdir "$lock" || die "cannot lock $1"
   fi
   echo $$ > "$lock/pid"
+  hostname > "$lock/host"
   LOCK_DIR="$lock"
   trap '[ -z "${LOCK_DIR:-}" ] || rm -rf "$LOCK_DIR"' EXIT
 }

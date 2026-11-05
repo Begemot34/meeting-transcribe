@@ -6,6 +6,8 @@
 FROM python:3.11-slim-bookworm
 
 ARG DEVICE=cpu
+# the image matches its torch build; env wins over the setup file
+ENV MT_DEVICE=${DEVICE}
 
 # what the build itself needs; the runtime cache variables come after the dependency layer
 ENV PYTHONUTF8=1 \
@@ -13,7 +15,7 @@ ENV PYTHONUTF8=1 \
     HF_HUB_DISABLE_XET=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libgomp1 ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg libgomp1 ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # uv stays in the image: ./transcribe runs `uv sync` itself when uv.lock is out of sync,

@@ -16,20 +16,19 @@
 #   --cuda       image localhost/meeting-transcribe:cuda + the host GPU (nvidia.com/gpu=all)
 #   --image NAME run another image
 #   --build      rebuild the image first
-#   --pull       podman pull the image first
+#   --pull       podman pull the image first (a localhost image cannot be pulled — use --build)
 #   --build and --pull: use one, not both
 #   A foreign --image (not localhost/meeting-transcribe*) gets no MT_LLM_API_KEY/HF_TOKEN
 set -euo pipefail
 [ "$(uname -s)" = Linux ] || { printf 'transcribe-container: Linux only; on macOS run ./transcribe directly\n' >&2; exit 2; }
 
 IMAGE="localhost/meeting-transcribe:latest"
-BUILD_DEVICE=cpu
-BUILD=0 PULL=0 IMAGE_SET=0
+BUILD=0 PULL=0 IMAGE_SET=0 CUDA=0
 GPU=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --cuda)
-      BUILD_DEVICE=cuda
+      CUDA=1
       GPU=(--device nvidia.com/gpu=all)
       if [ "$IMAGE_SET" = 0 ]; then IMAGE="localhost/meeting-transcribe:cuda"; fi ;;
     --image) [ $# -ge 2 ] || { printf 'transcribe-container: --image needs a name\n' >&2; exit 2; }
@@ -41,17 +40,50 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ "$BUILD" = 1 ] && [ "$PULL" = 1 ]; then
+  printf 'transcribe-container: use --build or --pull, not both\n' >&2
+  exit 2
+fi
 
 # podman cannot parse a "-v src:dst" whose source contains a colon: fail before running anything
 case "$PWD" in
   *:*) printf 'transcribe-container: the current directory contains ":", podman cannot mount it (-v src:dst) — run from a path without colons\n' >&2; exit 2 ;;
 esac
 
-# setup settings live on the cache volume next to the models, not in the ephemeral container layer
-export MT_CONFIG="${MT_CONFIG:-/cache/config.env}"
+# the container mounts only the current directory: positional paths that resolve outside it would
+# have their results written to an unmounted path and lost with --rm — stop before any build or pull
+PDIR="$(pwd -P)"
+case "${1:-}" in
+  auto|asr|frames|badges|strip|merge) npaths=2 ;;
+  export|summarize) npaths=1 ;;
+  *) npaths=0 ;;
+esac
+if [ "$npaths" -gt 0 ]; then
+  skip="" pos=0
+  for arg in "${@:2}"; do
+    if [ -n "$skip" ]; then skip=""; continue; fi
+    case "$arg" in
+      --title|--date|--language|--summary|--model|--llm|--max-speakers|--threshold|--min-gap|--crop|--share-start|--per-speaker|--probe|--duration|--speakers|--width|--quality|--merge-gap) skip=1 ;;
+      --*) ;;
+      *)
+        pos=$((pos + 1))
+        if [ "$pos" -le "$npaths" ]; then
+          p="$(realpath -m -- "$arg" 2>/dev/null || printf '%s' "$arg")"
+          case "$p" in
+            "$PDIR"|"$PDIR"/*) ;;
+            *) printf 'transcribe-container: %s resolves outside the current directory — the container mounts only it; run from the folder that holds the recording and output\n' "$arg" >&2; exit 2 ;;
+          esac
+        fi ;;
+    esac
+  done
+fi
+
+# setup settings live on the cache volume next to the models, never a host path: the container's
+# config.env stays inside the volume and cannot shadow the host file
+export MT_CONFIG=/cache/config.env
 
 # --cuda implies the cuda device — unless the user picked an image or a device themselves
-if [ "$BUILD_DEVICE" = cuda ] && [ "$IMAGE_SET" = 0 ]; then
+if [ "$CUDA" = 1 ] && [ "$IMAGE_SET" = 0 ]; then
   export MT_DEVICE="${MT_DEVICE:-cuda}"
 fi
 case "${MT_DEVICE:-}" in
@@ -60,6 +92,16 @@ case "${MT_DEVICE:-}" in
       *:cuda) ;;
       *) printf 'transcribe-container: MT_DEVICE=cuda needs a cuda image — run with --cuda\n' >&2; exit 2 ;;
     esac ;;
+esac
+
+# the torch build follows the image tag, not the flag: a cuda-tagged image is built with cuda torch
+case "$IMAGE" in
+  *:cuda)
+    BUILD_DEVICE=cuda
+    # a cuda-tagged image runs on the GPU: without the host GPU device the run fails mid-way;
+    # an explicit MT_DEVICE=cpu is the one way to use it without the GPU
+    if [ "${MT_DEVICE:-}" != cpu ]; then GPU=(--device nvidia.com/gpu=all); fi ;;
+  *) BUILD_DEVICE=cpu ;;
 esac
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -81,7 +123,13 @@ elif ! podman image exists "$IMAGE"; then
   esac
 fi
 
-podman volume exists mt-cache || podman volume create mt-cache
+# trusted images share the mt-cache volume; a foreign image gets its own mt-cache-foreign, so its
+# runs can neither read the trusted config.env on the cache volume, nor write into the trusted
+# model cache; the repo directory is still mounted as-is — run foreign images from a folder
+# without config.env
+VOL=mt-cache
+case "$IMAGE" in localhost/meeting-transcribe | localhost/meeting-transcribe:*) ;; *) VOL=mt-cache-foreign ;; esac
+podman volume exists "$VOL" || podman volume create "$VOL"
 
 # MT_*/HF_* settings, the Ollama address, proxies and the pyannote metrics switch follow the
 # shell into the container; variables that are not set are not passed at all.
@@ -118,7 +166,7 @@ exec podman run --rm \
   --userns=keep-id \
   --security-opt label=disable \
   "${GPU[@]}" \
-  -v mt-cache:/cache \
+  -v "$VOL:/cache" \
   -v "$PWD:$PWD" \
   -w "$PWD" \
   "${ENV_FLAGS[@]}" \
