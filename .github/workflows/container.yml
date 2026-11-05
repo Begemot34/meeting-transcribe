@@ -1,0 +1,24 @@
+name: container
+
+on:
+  push:
+    branches: [main]
+    paths: [Containerfile, pyproject.toml, uv.lock, transcribe, "scripts/**", ".github/workflows/container.yml"]
+  pull_request:
+    paths: [Containerfile, pyproject.toml, uv.lock, transcribe, "scripts/**", ".github/workflows/container.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - run: podman build --build-arg DEVICE=cpu -t localhost/meeting-transcribe:latest .
+      - run: podman run --rm localhost/meeting-transcribe:latest help
