@@ -3,6 +3,7 @@
 On macOS it runs under the system /bin/bash 3.2 — the shell people really have there."""
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -107,12 +108,16 @@ def test_mt_config_missing_is_not_fatal(home, tmp_path):
 # Unit-tested by extracting the function from transcribe and sourcing it with a die() stub.
 
 
-def _extract_lock_work():
-    # extracts lock_work from transcribe; update it if the function moves
-    out = subprocess.run(["sed", "-n", "/^lock_work()/,/^}/p", str(ROOT / "transcribe")],
+def _extract_function(name):
+    # extracts a top-level bash function from transcribe; update it if the function moves
+    out = subprocess.run(["sed", "-n", f"/^{name}()/,/^}}/p", str(ROOT / "transcribe")],
                          capture_output=True, text=True, check=True).stdout
-    assert "lock_work()" in out, "lock_work extraction changed — update the sed range"
+    assert f"{name}()" in out, f"{name} extraction changed — update the sed range"
     return out
+
+
+def _extract_lock_work():
+    return _extract_function("lock_work")
 
 
 def _make_lock(work, pid, host):
@@ -124,10 +129,11 @@ def _make_lock(work, pid, host):
 
 
 def _hostname():
-    return subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
+    # bash's own $HOSTNAME, as lock_work uses: the hostname program is not on every system
+    return subprocess.run([BASH, "-c", 'echo "$HOSTNAME"'], capture_output=True, text=True).stdout.strip()
 
 
-def _run_lock_work(work, func_file):
+def _run_lock_work(work, func_file, path=None):
     # source the extracted lock_work with a die() stub and report the resulting lock contents
     script = """
 source "$1"
@@ -140,7 +146,9 @@ echo "PID=$p"
 echo "HOST=$h"
 echo "SHELLPID=$$"
 """
-    return subprocess.run([BASH, "-c", script, "locktest", str(func_file), str(work)],
+    env = None if path is None else {"PATH": str(path), "LANG": "C.UTF-8"}
+    # bash by its absolute path: the test PATH may hold only a few tools
+    return subprocess.run([shutil.which(BASH), "-c", script, "locktest", str(func_file), str(work)], env=env,
                           capture_output=True, text=True, encoding="utf-8", timeout=30)
 
 
@@ -198,3 +206,93 @@ def test_lock_work_takes_over_dead_pid(tmp_path):
     assert host == _hostname()
     assert pid != "999999"  # refreshed, not the dead pid
     assert pid == re.search(r"SHELLPID=(\S+)", r.stdout).group(1)
+
+
+def test_lock_work_without_the_hostname_program(tmp_path):
+    # the hostname program is not on every system (Arch: inetutils); with set -euo pipefail a missing one
+    # would kill asr — lock_work uses bash's $HOSTNAME. PATH holds only the programs it really needs.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("cat", "mkdir", "rm", "uname"):
+        found = next(d for d in ("/bin", "/usr/bin") if os.path.exists(f"{d}/{tool}"))
+        (bin_dir / tool).symlink_to(f"{found}/{tool}")
+    func_file = tmp_path / "lock_work.sh"
+    func_file.write_text(_extract_lock_work())
+    work = tmp_path / "work"
+    work.mkdir()
+    _make_lock(work, 999999, "other-host")
+    r = _run_lock_work(work, func_file, path=bin_dir)
+    assert r.returncode == 0, r.stderr
+    assert re.search(r"HOST=(\S+)", r.stdout).group(1) == _hostname()
+
+
+# ensure_env: the torch build follows MT_DEVICE, but a cuda environment covers the CPU and stays cuda.
+# Unit-tested by extracting the function with stubs and a fake uv that records how it was called.
+
+
+def _run_ensure_env(tmp_path, device, synced=None, python=True, lock_newer=False):
+    root = tmp_path / "app"
+    venv = root / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    if python:
+        (venv / "bin" / "python").write_text("#!/bin/sh\n")
+        (venv / "bin" / "python").chmod(0o755)
+    (venv / "bin" / "ffmpeg").write_text("#!/bin/sh\n")
+    (venv / "bin" / "ffmpeg").chmod(0o755)
+    lock = root / "uv.lock"
+    lock.write_text("")
+    if synced is not None:
+        (venv / ".synced").write_text(synced + "\n")
+    old, new = 1_700_000_000, 1_700_000_100
+    os.utime(lock, (new, new) if lock_newer else (old, old))
+    if synced is not None:
+        os.utime(venv / ".synced", (old, old))
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    calls = tmp_path / "uv-calls"
+    (fake / "uv").write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n')
+    (fake / "uv").chmod(0o755)
+    func_file = tmp_path / "ensure_env.sh"
+    func_file.write_text(_extract_function("ensure_env"))
+    script = """
+source "$1"
+check_platform() { :; }; ensure_uv() { :; }; log() { :; }
+die() { echo "[transcribe] $*" >&2; exit 1; }
+ROOT="$2"; VENV="$ROOT/.venv"; PY="$VENV/bin/python"; DEVICE="$3"
+ensure_env
+"""
+    env = {"PATH": f"{fake}:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    r = subprocess.run([BASH, "-c", script, "envtest", str(func_file), str(root), device], env=env,
+                       capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert r.returncode == 0, r.stderr
+    uv = calls.read_text().splitlines() if calls.exists() else []
+    return uv, (venv / ".synced").read_text().strip() if (venv / ".synced").exists() else None
+
+
+def test_ensure_env_keeps_a_cuda_environment_for_the_cpu(tmp_path):
+    uv, synced = _run_ensure_env(tmp_path, "cpu", synced="cuda")
+    assert uv == [] and synced == "cuda"
+
+
+def test_ensure_env_resyncs_a_cuda_environment_when_uv_lock_changes(tmp_path):
+    # MT_DEVICE=cpu on a cuda environment must not skip the uv.lock check: re-synced, and as cuda
+    uv, synced = _run_ensure_env(tmp_path, "cpu", synced="cuda", lock_newer=True)
+    assert len(uv) == 1 and uv[0].startswith("sync ") and "--extra cuda" in uv[0]
+    assert synced == "cuda"
+
+
+def test_ensure_env_switches_a_cpu_environment_to_cuda(tmp_path):
+    uv, synced = _run_ensure_env(tmp_path, "cuda", synced="cpu")
+    assert len(uv) == 1 and "--extra cuda" in uv[0]
+    assert synced == "cuda"
+
+
+def test_ensure_env_installs_when_there_is_no_python(tmp_path):
+    uv, synced = _run_ensure_env(tmp_path, "cpu", synced="cuda", python=False)
+    assert len(uv) == 1 and "--extra cuda" in uv[0]
+
+
+def test_ensure_env_first_install_follows_the_device(tmp_path):
+    uv, synced = _run_ensure_env(tmp_path, "cpu", python=False)
+    assert len(uv) == 1 and "--extra cpu" in uv[0]
+    assert synced == "cpu"
