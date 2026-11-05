@@ -11,6 +11,8 @@ lint:
 	$(UV_RUN) ruff check
 	shellcheck -S warning transcribe
 	bash -n transcribe
+	shellcheck -S warning transcribe-container
+	bash -n transcribe-container
 
 test:
 	$(UV_RUN) pytest

@@ -58,6 +58,19 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 с плиток видео или из того, как люди представляются, и подпишет реплики именами вместо `SPEAKER_00`. Позвать
 скилл явно: `/meeting-transcribe` в Claude Code, `$meeting-transcribe` в Codex.
 
+## Запуск в контейнере
+
+На Linux с [podman](https://podman.io): собери образ, один раз скачай модели и транскрибируй из папки с
+записью.
+
+```bash
+podman build --build-arg DEVICE=cpu -t localhost/meeting-transcribe:latest .
+./transcribe-container setup --language ru,en --summary none --yes
+./transcribe-container auto meeting.mp4 out/board-1105
+```
+
+Требования, образ для CUDA и compose — в [CONTAINER.ru.md](CONTAINER.ru.md).
+
 ## Результаты работы
 
 <picture>

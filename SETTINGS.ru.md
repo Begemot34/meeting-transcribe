@@ -25,9 +25,10 @@
 | `MT_DOWNLOAD_STALL_S` | `120` | через сколько секунд без прогресса перезапускать загрузку |
 | `MT_DOWNLOAD_ATTEMPTS` | `5` | сколько раз пробовать скачать модель |
 | `MT_EASYOCR_DIR` | `~/.EasyOCR` | где лежат модели EasyOCR для имён на экране (Linux) |
+| `MT_CONFIG` | `config.env` рядом с `./transcribe` | файл настроек: его пишет `setup` и читают все команды; `transcribe-container` ставит `/cache/config.env` на томе `mt-cache` |
 | `PYANNOTE_METRICS_ENABLED` | `false` | метрики использования pyannote.audio в pyannote.ai; выключены, чтобы ничего не уходило с машины |
 
-Настройки `setup` — в `config.env`.
+Настройки `setup` — в файле из `MT_CONFIG`.
 
 ## Скорость
 

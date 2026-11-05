@@ -25,9 +25,10 @@
 | `MT_DOWNLOAD_STALL_S` | `120` | seconds without progress before a download restarts |
 | `MT_DOWNLOAD_ATTEMPTS` | `5` | download attempts per model |
 | `MT_EASYOCR_DIR` | `~/.EasyOCR` | where EasyOCR models for names on screen are stored (Linux) |
+| `MT_CONFIG` | `config.env` next to `./transcribe` | the settings file: `setup` writes it, every command reads it; `transcribe-container` sets it to `/cache/config.env` on the `mt-cache` volume |
 | `PYANNOTE_METRICS_ENABLED` | `false` | pyannote.audio's usage metrics to pyannote.ai; off, so nothing leaves the machine |
 
-`setup` saves its settings to `config.env`.
+`setup` saves its settings to the file in `MT_CONFIG`.
 
 ## Speed
 

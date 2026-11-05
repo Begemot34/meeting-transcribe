@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Run ./transcribe inside Podman: same commands and arguments, paths as on the host —
+# the current directory is bind-mounted where it is, models download once into the
+# named volume mt-cache (podman volume rm mt-cache clears them).
+#
+# Build the image and download the models once:
+#   ./transcribe-container setup --language ru,en --summary none --yes
+# Transcribe a recording (run from the folder that holds it):
+#   ./transcribe-container auto meeting.mp4 out/board-1105
+# NVIDIA GPU: build the cuda image once, MT_DEVICE=cuda turns recognition onto it:
+#   ./transcribe-container --cuda setup --language ru,en --summary none --yes
+#   MT_DEVICE=cuda ./transcribe-container --cuda auto meeting.mp4 out/board-1105
+# Summary via a local Ollama on the host: set OLLAMA_HOST=http://host.containers.internal:11434
+#
+# Flags before the transcribe command:
+#   --cuda       image localhost/meeting-transcribe:cuda + the host GPU (nvidia.com/gpu=all)
+#   --image NAME run another image
+#   --build      rebuild the image first
+#   --pull       podman pull the image first
+#   --build and --pull: use one, not both
+#   A foreign --image (not localhost/meeting-transcribe*) gets no MT_LLM_API_KEY/HF_TOKEN
+set -euo pipefail
+[ "$(uname -s)" = Linux ] || { printf 'transcribe-container: Linux only; on macOS run ./transcribe directly\n' >&2; exit 2; }
+
+IMAGE="localhost/meeting-transcribe:latest"
+BUILD_DEVICE=cpu
+BUILD=0 PULL=0 IMAGE_SET=0
+GPU=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cuda)
+      BUILD_DEVICE=cuda
+      GPU=(--device nvidia.com/gpu=all)
+      if [ "$IMAGE_SET" = 0 ]; then IMAGE="localhost/meeting-transcribe:cuda"; fi ;;
+    --image) [ $# -ge 2 ] || { printf 'transcribe-container: --image needs a name\n' >&2; exit 2; }
+             IMAGE_SET=1; IMAGE="$2"; shift ;;
+    --build) BUILD=1 ;;
+    --pull) PULL=1 ;;
+    -*) printf 'transcribe-container: unknown flag %s\n' "$1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+  shift
+done
+
+# podman cannot parse a "-v src:dst" whose source contains a colon: fail before running anything
+case "$PWD" in
+  *:*) printf 'transcribe-container: the current directory contains ":", podman cannot mount it (-v src:dst) — run from a path without colons\n' >&2; exit 2 ;;
+esac
+
+# setup settings live on the cache volume next to the models, not in the ephemeral container layer
+export MT_CONFIG="${MT_CONFIG:-/cache/config.env}"
+
+# --cuda implies the cuda device — unless the user picked an image or a device themselves
+if [ "$BUILD_DEVICE" = cuda ] && [ "$IMAGE_SET" = 0 ]; then
+  export MT_DEVICE="${MT_DEVICE:-cuda}"
+fi
+case "${MT_DEVICE:-}" in
+  cuda)
+    case "$IMAGE" in
+      *:cuda) ;;
+      *) printf 'transcribe-container: MT_DEVICE=cuda needs a cuda image — run with --cuda\n' >&2; exit 2 ;;
+    esac ;;
+esac
+
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+if [ "$PULL" = 1 ]; then podman pull "$IMAGE"; fi
+if [ "$BUILD" = 1 ]; then
+  podman build \
+    --build-arg "DEVICE=$BUILD_DEVICE" \
+    --build-arg "UID=$(id -u)" --build-arg "GID=$(id -g)" \
+    -t "$IMAGE" "$HERE"
+elif ! podman image exists "$IMAGE"; then
+  case "$IMAGE" in
+    localhost/meeting-transcribe | localhost/meeting-transcribe:*)
+      podman build \
+        --build-arg "DEVICE=$BUILD_DEVICE" \
+        --build-arg "UID=$(id -u)" --build-arg "GID=$(id -g)" \
+        -t "$IMAGE" "$HERE" ;;
+    *) printf 'transcribe-container: image %s is not here — podman pull it first (--pull), or build it with --build\n' "$IMAGE" >&2; exit 1 ;;
+  esac
+fi
+
+podman volume exists mt-cache || podman volume create mt-cache
+
+# MT_*/HF_* settings, the Ollama address, proxies and the pyannote metrics switch follow the
+# shell into the container; variables that are not set are not passed at all.
+# Secrets (MT_LLM_API_KEY, HF_TOKEN) go only to localhost/meeting-transcribe images.
+TRUSTED=1
+case "$IMAGE" in localhost/meeting-transcribe | localhost/meeting-transcribe:*) ;; *) TRUSTED="" ;; esac
+
+ENV_FLAGS=()
+SKIPPED=""
+while IFS='=' read -r name _; do
+  case "$name" in
+    MT_*|HF_*|OLLAMA_HOST|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|PYANNOTE_METRICS_ENABLED) ;;
+    *) continue ;;
+  esac
+  case "$name" in
+    # the image points these caches at /cache; a host value would shadow the volume layout
+    HF_HOME | HF_HUB_CACHE | MT_EASYOCR_DIR) continue ;;
+  esac
+  if [ -z "$TRUSTED" ] && { [ "$name" = MT_LLM_API_KEY ] || [ "$name" = HF_TOKEN ]; }; then
+    SKIPPED="$SKIPPED $name"
+    continue
+  fi
+  ENV_FLAGS+=(--env "$name")
+done < <(env)
+[ -z "$SKIPPED" ] || printf 'transcribe-container:%s not passed into %s — secrets go only to localhost/meeting-transcribe images\n' "$SKIPPED" "$IMAGE" >&2
+
+# -it only when the input is a terminal, so logs and pipes work without one
+TTY=()
+if [ -t 0 ]; then TTY=(-it); fi
+
+# label=disable: rootless single-user host + CDI GPU, per podman docs; on a shared host reconsider
+exec podman run --rm \
+  "${TTY[@]}" \
+  --userns=keep-id \
+  --security-opt label=disable \
+  "${GPU[@]}" \
+  -v mt-cache:/cache \
+  -v "$PWD:$PWD" \
+  -w "$PWD" \
+  "${ENV_FLAGS[@]}" \
+  "$IMAGE" "$@"

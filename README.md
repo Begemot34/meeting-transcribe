@@ -60,6 +60,19 @@ names from the "who is speaking" badge, the video tiles or the way people introd
 utterances with names instead of `SPEAKER_00`. To call the skill by name: `/meeting-transcribe` in Claude Code,
 `$meeting-transcribe` in Codex.
 
+## Run in a container
+
+On Linux with [podman](https://podman.io): build the image, download the models once, then transcribe from the
+folder that holds the recording.
+
+```bash
+podman build --build-arg DEVICE=cpu -t localhost/meeting-transcribe:latest .
+./transcribe-container setup --language ru,en --summary none --yes
+./transcribe-container auto meeting.mp4 out/board-1105
+```
+
+Requirements, the CUDA image and compose — in [CONTAINER.md](CONTAINER.md).
+
 ## Results
 
 <picture>

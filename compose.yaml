@@ -1,0 +1,51 @@
+# meeting-transcribe with podman-compose. The repo directory is mounted at /work, the models
+# download once into the mt-cache volume (podman volume ls shows it, podman volume rm mt-cache
+# clears it):
+#   podman-compose build
+#   podman-compose run --rm transcribe setup --language ru,en --summary none --yes
+#   podman-compose run --rm transcribe auto /work/meeting.mp4 /work/out
+services:
+  transcribe:
+    image: localhost/meeting-transcribe:latest
+    build:
+      # on a host whose uid/gid differ from 1000: podman build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t localhost/meeting-transcribe:latest
+      context: .
+      args:
+        DEVICE: cpu
+    userns_mode: keep-id
+    # label=disable: rootless single-user host + CDI GPU, per podman docs; on a shared host reconsider
+    security_opt:
+      - label=disable
+    volumes:
+      - mt-cache:/cache
+      - .:/work
+    working_dir: /work
+    entrypoint: /app/transcribe
+    command: help
+    # the wrapper passes all MT_*; this list is compose's explicit version
+    environment:
+      - MT_CONFIG=/cache/config.env
+      - MT_LANGUAGE
+      - MT_DEVICE
+      - MT_ALIGN_MODEL
+      - MT_COMPUTE_TYPE
+      - MT_DIARIZE_DEVICE
+      - MT_WHISPER_MODEL
+      - MT_LLM
+      - MT_LLM_BASE_URL
+      - MT_LLM_API_KEY
+      - MT_LLM_MODEL
+      - MT_LLM_TEMPERATURE
+      - MT_LLM_TIMEOUT
+      - MT_LOCAL_MODEL
+      - MT_OPENCODE_MODEL
+      - HF_HOME
+      - HF_TOKEN
+      - HTTPS_PROXY
+      - HTTP_PROXY
+      - NO_PROXY
+      - OLLAMA_HOST
+
+volumes:
+  mt-cache:
+    name: mt-cache
