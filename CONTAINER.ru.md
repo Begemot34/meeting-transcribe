@@ -158,8 +158,10 @@ Inbox проверяется каждые `MT_SERVE_POLL_S` секунд; фай
 - из папки: `data/jobs/<id>/<имя>/`, например расшаренной по SMB или синхронизируемой;
 - по webhook: на `MT_SERVE_WEBHOOK_URL` приходит POST с `{"event": "job.done", "job": {…}}`, когда задача
   закончилась (n8n, чат-бот, свой скрипт);
-- в S3 или MinIO: с `MT_SERVE_S3_BUCKET` результаты копируются в бакет в `<prefix><id задачи>/`; ключи берутся из
-  `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY`, для MinIO нужен `MT_SERVE_S3_ENDPOINT`;
+- в S3: с `MT_SERVE_S3_BUCKET` результаты копируются в бакет в `<prefix><id задачи>/`; ключи берутся из
+  `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY`. Подходит любое S3-совместимое хранилище (Cloudflare R2, Garage, Ceph,
+  объектное хранилище облака) через `MT_SERVE_S3_ENDPOINT`; для R2 это `https://<id аккаунта>.r2.cloudflarestorage.com`
+  и `MT_SERVE_S3_REGION=auto`;
 - через API, ниже.
 
 **API.** Если задан `MT_SERVE_TOKEN`, каждый вызов `/api/*` требует `Authorization: Bearer <токен>` (или

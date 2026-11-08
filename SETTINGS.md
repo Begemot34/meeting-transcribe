@@ -55,8 +55,8 @@ the data folder, the address and the number of workers have command-line options
 | `MT_SERVE_WEBHOOK_URL` | — | when a job ends, POST `{"event": "job.done"\|"job.failed", "job": {…}}` to this address; a cancelled job is `job.failed` with the error `cancelled` |
 | `MT_SERVE_S3_BUCKET` | — | copy the results (`transcript.md`, HTML, PDF) to this S3 bucket; keys come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
 | `MT_SERVE_S3_PREFIX` | — | key prefix: the files land at `<prefix><job id>/<file>` |
-| `MT_SERVE_S3_ENDPOINT` | AWS | S3-compatible storage address, e.g. `http://minio:9000` |
-| `MT_SERVE_S3_REGION` | — | bucket region |
+| `MT_SERVE_S3_ENDPOINT` | AWS | S3-compatible storage address, e.g. `https://<account id>.r2.cloudflarestorage.com` for Cloudflare R2 |
+| `MT_SERVE_S3_REGION` | — | bucket region; `auto` for Cloudflare R2 |
 | `MT_SERVE_TRANSCRIBE` | `transcribe` of this folder | the pipeline a job runs; the tests put a stub here |
 
 ## Speed

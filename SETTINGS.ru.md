@@ -55,8 +55,8 @@
 | `MT_SERVE_WEBHOOK_URL` | — | по завершении задачи POST `{"event": "job.done"\|"job.failed", "job": {…}}` на этот адрес; отменённая задача приходит как `job.failed` с ошибкой `cancelled` |
 | `MT_SERVE_S3_BUCKET` | — | копировать результаты (`transcript.md`, HTML, PDF) в этот S3-бакет; ключи из `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
 | `MT_SERVE_S3_PREFIX` | — | префикс ключей: файлы ложатся в `<prefix><id задачи>/<файл>` |
-| `MT_SERVE_S3_ENDPOINT` | AWS | адрес S3-совместимого хранилища, например `http://minio:9000` |
-| `MT_SERVE_S3_REGION` | — | регион бакета |
+| `MT_SERVE_S3_ENDPOINT` | AWS | адрес S3-совместимого хранилища, например `https://<id аккаунта>.r2.cloudflarestorage.com` для Cloudflare R2 |
+| `MT_SERVE_S3_REGION` | — | регион бакета; для Cloudflare R2 — `auto` |
 | `MT_SERVE_TRANSCRIBE` | `transcribe` из этой папки | конвейер, который запускает задача; тесты подставляют сюда заглушку |
 
 ## Скорость

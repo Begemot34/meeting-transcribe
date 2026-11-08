@@ -146,7 +146,7 @@ def build_command(transcribe: Path, job: Job, job_dir: Path) -> list[str]:
 
 
 class S3Sink:
-    """Copies a finished job's artifacts to s3://bucket/<prefix><job id>/<name>; MinIO through `endpoint`."""
+    """Copies a finished job's artifacts to s3://bucket/<prefix><job id>/<name>; other S3-compatible storage through `endpoint`."""
 
     def __init__(self, bucket: str, prefix: str = "", endpoint: str | None = None, region: str | None = None,
                  client=None):

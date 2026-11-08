@@ -161,8 +161,10 @@ on the CPU give it hours (e.g. `21600`).
 - in the folder: `data/jobs/<id>/<name>/`, e.g. shared over SMB or synced;
 - by webhook: `MT_SERVE_WEBHOOK_URL` gets a POST with `{"event": "job.done", "job": {…}}` when a job ends
   (n8n, a chat bot, your own script);
-- in S3 or MinIO: with `MT_SERVE_S3_BUCKET` the results are copied to `<prefix><job id>/` in the bucket; keys come
-  from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, MinIO needs `MT_SERVE_S3_ENDPOINT`;
+- in S3: with `MT_SERVE_S3_BUCKET` the results are copied to `<prefix><job id>/` in the bucket; keys come from
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Any S3-compatible storage works (Cloudflare R2, Garage, Ceph, a
+  cloud provider's object storage) through `MT_SERVE_S3_ENDPOINT`; for R2 it is
+  `https://<account id>.r2.cloudflarestorage.com` with `MT_SERVE_S3_REGION=auto`;
 - through the API, below.
 
 **API.** With `MT_SERVE_TOKEN` set, every `/api/*` call needs `Authorization: Bearer <token>` (or `?token=` in a
