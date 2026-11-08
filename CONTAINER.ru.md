@@ -74,12 +74,105 @@ MT_DEVICE=cuda transcribe-container --cuda auto meeting.mp4 out/board-1105
 ## Compose
 
 ```bash
-podman-compose build
-podman-compose run --rm transcribe auto /work/meeting.mp4 /work/out
+docker compose build
+docker compose run --rm transcribe auto /work/meeting.mp4 /work/out
+# podman: настройки только для podman лежат в отдельном override-файле
+podman-compose -f compose.yaml -f compose.podman.yaml build
+podman-compose -f compose.yaml -f compose.podman.yaml run --rm transcribe auto /work/meeting.mp4 /work/out
 ```
 
 Каталог репозитория смонтирован в `/work`. У тома `mt-cache` фиксированное имя, поэтому модели и настройки
-общие с `transcribe-container`.
+общие с `transcribe-container`. `compose.cuda.yaml` поверх переключает оба сервиса на cuda-образ и GPU хоста.
+Compose работает и на macOS (Docker Desktop, только CPU); на Mac `./transcribe serve` без контейнера быстрее,
+потому что использует GPU Apple.
+
+## Сервис
+
+`serve` превращает образ в сервис, которым пользуются без терминала: запись кладут в папку или загружают в
+браузере, а когда она готова, забирают HTML, PDF или Markdown.
+
+```bash
+mkdir -p data/inbox        # до первого запуска: иначе docker создаст ./data от root
+docker compose run --rm transcribe setup --language ru,en --summary none --yes   # модели, один раз
+docker compose up -d serve
+docker compose logs -f serve
+```
+
+Веб-интерфейс и API — на `http://127.0.0.1:8080/`. Compose публикует порт только для этой машины; чтобы открыть
+его в сеть, замените `ports` в `compose.yaml` на `"8080:8080"` и задайте `MT_SERVE_TOKEN`. Без compose:
+`transcribe-container serve` (Linux, останавливается Ctrl+C) или `./transcribe serve` прямо на машине.
+
+**Путь записи.** В `data/` две папки:
+
+```text
+data/inbox/                          сюда кладут записи (mp4, mkv, mov, webm, m4a, mp3, wav, …)
+data/jobs/20261108-141500-board/     по папке на запись
+  job.json                           состояние: queued, running, done, failed; этап, проценты, ошибки
+  log.txt                            полный вывод `auto`
+  source.mp4                         запись, перенесённая из inbox
+  board/                             результаты: transcript.md, board.html, board.pdf, screenshots/
+```
+
+Inbox проверяется каждые `MT_SERVE_POLL_S` секунд; файл берётся, когда его размер и время не менялись
+`MT_SERVE_STABLE_S` секунд, поэтому копия по сети не берётся на середине. Временные имена (`.part`, `.tmp`,
+`.crdownload`, имена с `.` или `~` в начале) пропускаются. Опрос вместо событий файловой системы: события
+ненадёжно проходят через bind mount, SMB и NFS. Inbox может быть сетевой папкой, смонтированной в контейнер.
+
+Опции для одной записи — в файле рядом с ней, с её именем плюс `.json`; его кладут раньше самой записи:
+
+```json
+{"title": "Планёрка", "date": "2026-11-05", "language": "ru", "summary": "none", "names": true}
+```
+
+Все ключи необязательны; `summary` — одно из `local`, `api`, `none` (и `claude`, `codex`, `opencode` на хосте).
+Ошибка в файле проваливает задачу с причиной, запись не остаётся в inbox.
+
+**Очередь и воркеры.** Задачи идут в порядке поступления, по `MT_SERVE_WORKERS` одновременно (по умолчанию 1).
+Один запуск `large-v3` с диаризацией занимает 6–8 ГБ RAM или большую часть GPU на 12 ГБ, так что второй воркер
+окупается, только если памяти хватает на двоих. Остановка сервиса (`docker compose stop`, перезапуск, деплой)
+останавливает идущие задачи и ставит их обратно в очередь: следующий запуск продолжает их и переиспользует уже
+извлечённый звук. Задача, оборванная падением, запускается снова до `MT_SERVE_MAX_ATTEMPTS` раз.
+`MT_SERVE_JOB_TIMEOUT_S` останавливает зависшую задачу; для длинных записей на CPU ставьте часы (например `21600`).
+
+**Как забрать результаты.**
+
+- в браузере: таблица задач с прогрессом, ссылки на HTML, PDF и Markdown, лог, кнопки повторить, отменить,
+  удалить;
+- из папки: `data/jobs/<id>/<имя>/`, например расшаренной по SMB или синхронизируемой;
+- по webhook: на `MT_SERVE_WEBHOOK_URL` приходит POST с `{"event": "job.done", "job": {…}}`, когда задача
+  закончилась (n8n, чат-бот, свой скрипт);
+- в S3 или MinIO: с `MT_SERVE_S3_BUCKET` результаты копируются в бакет в `<prefix><id задачи>/`; ключи берутся из
+  `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY`, для MinIO нужен `MT_SERVE_S3_ENDPOINT`;
+- через API, ниже.
+
+**API.** Если задан `MT_SERVE_TOKEN`, каждый вызов `/api/*` требует `Authorization: Bearer <токен>` (или
+`?token=` в ссылке). Интерактивное описание — на `/api/docs`.
+
+| Вызов | Что делает |
+| --- | --- |
+| `POST` или `PUT /api/jobs?name=<файл>&title=&date=&language=&summary=&names=` | загрузить запись телом запроса; возвращает задачу |
+| `GET /api/jobs` | все задачи, новые сверху |
+| `GET /api/jobs/<id>` | одна задача: `state`, `stage`, `progress`, `error`, `warnings`, `artifacts`, `s3` |
+| `GET /api/jobs/<id>/files/<имя>` | результат из `artifacts` или `log.txt` |
+| `GET /api/jobs/<id>/log?tail=200` | конец лога |
+| `POST /api/jobs/<id>/retry` | запустить завершённую или упавшую задачу снова |
+| `POST /api/jobs/<id>/cancel` | остановить задачу в очереди или в работе |
+| `DELETE /api/jobs/<id>` | удалить завершённую задачу с файлами |
+| `GET /healthz` | жив ли сервис и размер очереди, без токена |
+
+```bash
+curl -T meeting.mp4 -H "Authorization: Bearer $MT_SERVE_TOKEN" \
+  "http://127.0.0.1:8080/api/jobs?name=meeting.mp4&title=Board&summary=none"
+curl -H "Authorization: Bearer $MT_SERVE_TOKEN" http://127.0.0.1:8080/api/jobs/<id>
+curl -OJ -H "Authorization: Bearer $MT_SERVE_TOKEN" http://127.0.0.1:8080/api/jobs/<id>/files/<имя>.pdf
+```
+
+За reverse proxy поднимите его лимит тела запроса для загрузок (nginx: `client_max_body_size 8g;`). Завершённые
+задачи хранятся, пока их не удалят; `MT_SERVE_KEEP_DAYS` удаляет старые, `MT_SERVE_KEEP_SOURCE=0` удаляет запись
+после успешного запуска. Все настройки: [настройки сервиса](SETTINGS.ru.md#сервис).
+
+Зависимости сервиса (fastapi, uvicorn, boto3) уже есть в образе. На хосте `./transcribe serve` ставит их при
+первом запуске и снова после обновления зависимостей.
 
 ## Где что лежит
 

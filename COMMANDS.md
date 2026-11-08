@@ -13,6 +13,7 @@
 | [`summarize`](#summarize) | add a summary and rebuild HTML and PDF |
 | [`export`](#export) | rebuild HTML and PDF from `transcript.md`, e.g. after manual edits |
 | [`setup`](#setup) | install the environment and download the models |
+| [`serve`](#serve) | run as a service: an inbox folder, a queue, a web UI and an HTTP API |
 | `doctor [--language X]` | show what is installed and where the models are; installs nothing |
 | `install-skill` / `uninstall-skill` | register [SKILL.md](SKILL.md) for agents / remove it |
 
@@ -138,3 +139,21 @@ Without options it asks questions; any option turns the questions off, and what 
 | `--summary B` | saved one is kept | default summary backend: `claude`, `codex`, `opencode`, `local`, `api`, `none` |
 | `--skill` / `--no-skill` | `--no-skill` | run `install-skill` or not |
 | `--yes`, `-y` | — | accept the defaults without questions |
+
+## serve
+
+```text
+./transcribe serve [options]
+```
+
+Runs until stopped (Ctrl+C, SIGTERM). Recordings dropped into `<data>/inbox` or uploaded in the web UI go into a
+queue; each one runs `auto`, and the results are in `<data>/jobs/<id>/`, in the web UI and in the API. How it
+works, the API and the container setup: [service in a container](CONTAINER.md#service). Every option also has an
+`MT_SERVE_*` variable ([settings of the service](SETTINGS.md#service)); an option wins over the variable.
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `--data DIR` | `MT_SERVE_DATA`, else `./data` | data folder: `inbox/` for new recordings, `jobs/` for the results |
+| `--host H` | `MT_SERVE_HOST`, else `0.0.0.0` | address the web UI and the API listen on |
+| `--port N` | `MT_SERVE_PORT`, else `8080` | their port |
+| `--workers N` | `MT_SERVE_WORKERS`, else `1` | recordings processed at once; each takes the memory of a whole run |

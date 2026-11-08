@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meeting-transcribe</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+    --accent: #2f6fde; --ok: #1e8a4c; --bad: #c43d3d; --wait: #8a6d1e; --run: #2f6fde;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --card: #1c2027; --text: #e6e9ee; --muted: #98a1b0; --line: #2c323c;
+      --accent: #6c9cf0; --ok: #52c084; --bad: #ef7676; --wait: #d6b75c; --run: #6c9cf0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 22px; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  code { font-size: 13px; background: var(--line); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 16px; }
+  #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 22px; text-align: center; cursor: pointer; }
+  #drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  label.check { flex-direction: row; align-items: center; gap: 6px; padding-top: 18px; }
+  input, select, button { font: inherit; color: var(--text); }
+  input[type=text], input[type=date], input[type=password], select {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  button { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 7px 16px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; min-width: 80px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .state { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 10px; border: 1px solid currentColor; }
+  .queued { color: var(--wait); } .running { color: var(--run); } .done { color: var(--ok); } .failed { color: var(--bad); }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .actions a { color: var(--accent); text-decoration: none; }
+  .err { color: var(--bad); font-size: 13px; overflow-wrap: anywhere; }
+  .warn { color: var(--wait); font-size: 13px; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; max-height: 360px;
+        overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  @media (max-width: 720px) {
+    thead { display: none; }
+    tr { display: block; border-bottom: 1px solid var(--line); padding: 6px 0; }
+    td { display: block; border: 0; padding: 3px 0; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>meeting-transcribe</h1>
+    <span class="muted" id="health">…</span>
+  </header>
+
+  <section class="card" id="tokenbox" hidden>
+    <label>Access token (MT_SERVE_TOKEN)
+      <input type="password" id="token" autocomplete="off">
+    </label>
+    <p><button class="primary" id="savetoken">Use token</button></p>
+  </section>
+
+  <section class="card">
+    <div id="drop">Drop a recording here or <u>choose a file</u><br>
+      <span class="muted">or copy it into the inbox folder: <code id="inbox">…</code></span></div>
+    <input type="file" id="file" accept="video/*,audio/*,.mkv,.webm,.m4a,.opus" hidden>
+    <div class="fields">
+      <label>Title <input type="text" id="title" placeholder="file name"></label>
+      <label>Date <input type="date" id="date"></label>
+      <label>Language <input type="text" id="language" placeholder="setup default" maxlength="3"></label>
+      <label>Summary
+        <select id="summary">
+          <option value="">setup default</option><option value="none">none</option>
+          <option>local</option><option>api</option><option>claude</option><option>codex</option><option>opencode</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="names" checked> speaker names</label>
+    </div>
+    <p id="chosen" class="muted"></p>
+    <div class="bar" id="upbar" hidden><i style="width:0"></i></div>
+    <p><button class="primary" id="send" disabled>Upload and transcribe</button> <span id="upmsg" class="muted"></span></p>
+  </section>
+
+  <section class="card">
+    <table>
+      <thead><tr><th>Recording</th><th>State</th><th>Progress</th><th>Results</th><th></th></tr></thead>
+      <tbody id="jobs"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card" id="logbox" hidden>
+    <header><strong id="logtitle"></strong><button id="logclose">close</button></header>
+    <pre id="log"></pre>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let token = "";
+try { token = sessionStorage.getItem("mt-token") || ""; } catch (e) { /* storage blocked */ }
+let file = null, logJob = null;
+
+function headers() { return token ? { Authorization: "Bearer " + token } : {}; }
+function withToken(url) { return token ? url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : url; }
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);  // strings become text nodes: file names are untrusted
+  return e;
+}
+async function api(method, path) {
+  const r = await fetch(path, { method, headers: headers() });
+  if (r.status === 401) { $("tokenbox").hidden = false; throw new Error("token required"); }
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
+  return r.status === 204 ? null : r.json();
+}
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : ""; }
+function fmtSize(n) {
+  return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(0) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB";
+}
+
+function row(j) {
+  const links = el("div", { class: "actions" });
+  for (const a of j.artifacts) {
+    const label = a.endsWith(".html") ? "HTML" : a.endsWith(".pdf") ? "PDF" : "Markdown";
+    links.append(el("a", { href: withToken(`/api/jobs/${encodeURIComponent(j.id)}/files/${encodeURIComponent(a)}`), target: "_blank" }, label));
+  }
+  links.append(el("a", { href: "#", onclick: (ev) => { ev.preventDefault(); showLog(j.id); } }, "log"));
+  const btns = el("div", { class: "actions" });
+  const act = (label, method, path, confirmText) => btns.append(el("button", { onclick: async () => {
+    if (confirmText && !window.confirm(confirmText)) return;
+    try { await api(method, path); } catch (e) { window.alert(e.message); }
+    refresh();
+  } }, label));
+  const base = `/api/jobs/${encodeURIComponent(j.id)}`;
+  if (j.state === "queued" || j.state === "running") act("cancel", "POST", base + "/cancel");
+  if (j.state === "done" || j.state === "failed") {
+    act("retry", "POST", base + "/retry");
+    act("delete", "DELETE", base, "Delete this job and its results?");
+  }
+  const bar = el("div", { class: "bar" }, el("i", { style: `width:${j.progress}%` }));
+  const progress = el("td", {}, j.state === "running" || j.state === "queued" ? bar : null,
+    el("div", { class: "muted" }, j.state === "done" ? "" : `${j.stage} · ${j.progress}%`));
+  const name = el("td", {}, el("div", {}, j.options.title || j.source.name),
+    el("div", { class: "muted" }, `${fmtTime(j.created)} · ${fmtSize(j.source.size)} · ${j.source.origin}`),
+    j.error ? el("div", { class: "err" }, j.error) : null,
+    ...j.warnings.map((w) => el("div", { class: "warn" }, w)));
+  return el("tr", {}, name, el("td", {}, el("span", { class: "state " + j.state }, j.state)), progress,
+    el("td", {}, links), el("td", {}, btns));
+}
+
+async function refresh() {
+  try {
+    const h = await (await fetch("/healthz")).json();
+    $("health").textContent = `${h.running} running · ${h.queued} queued · ${h.workers} worker(s)`;
+    $("inbox").textContent = h.inbox;
+    const { jobs } = await api("GET", "/api/jobs");
+    const body = $("jobs");
+    body.replaceChildren(...(jobs.length ? jobs.map(row) : [el("tr", {}, el("td", { colspan: 5, class: "muted" }, "no jobs yet"))]));
+    if (logJob) showLog(logJob, true);
+  } catch (e) {
+    $("health").textContent = e.message;
+  }
+}
+
+async function showLog(id, quiet) {
+  logJob = id;
+  $("logbox").hidden = false;
+  $("logtitle").textContent = id;
+  try {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(id)}/log?tail=300`, { headers: headers() });
+    const pre = $("log"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    pre.textContent = r.ok ? await r.text() : r.statusText;
+    if (!quiet || atEnd) pre.scrollTop = pre.scrollHeight;
+  } catch (e) { /* the next refresh tries again */ }
+}
+
+function choose(f) {
+  file = f || null;
+  $("chosen").textContent = file ? `${file.name} · ${fmtSize(file.size)}` : "";
+  $("send").disabled = !file;
+}
+
+function upload() {
+  if (!file) return;
+  const q = new URLSearchParams({ name: file.name });
+  for (const k of ["title", "date", "language", "summary"]) if ($(k).value.trim()) q.set(k, $(k).value.trim());
+  if (!$("names").checked) q.set("names", "false");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs?" + q);
+  for (const [k, v] of Object.entries(headers())) xhr.setRequestHeader(k, v);
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  $("upbar").hidden = false; $("send").disabled = true; $("upmsg").textContent = "uploading…";
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("upbar").firstChild.style.width = (100 * e.loaded / e.total) + "%"; };
+  xhr.onloadend = () => {
+    $("upbar").hidden = true;
+    if (xhr.status === 201) { $("upmsg").textContent = "queued"; choose(null); $("file").value = ""; }
+    else {
+      let m = xhr.statusText || "upload failed"; try { m = JSON.parse(xhr.responseText).detail || m; } catch (e) {}
+      if (xhr.status === 401) $("tokenbox").hidden = false;
+      $("upmsg").textContent = m; $("send").disabled = !file;
+    }
+    refresh();
+  };
+  xhr.send(file);
+}
+
+$("drop").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", (e) => choose(e.target.files[0]));
+for (const ev of ["dragenter", "dragover"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.add("over"); });
+for (const ev of ["dragleave", "drop"]) $("drop").addEventListener(ev, (e) => { e.preventDefault(); $("drop").classList.remove("over"); });
+$("drop").addEventListener("drop", (e) => choose(e.dataTransfer.files[0]));
+$("send").addEventListener("click", upload);
+$("logclose").addEventListener("click", () => { logJob = null; $("logbox").hidden = true; });
+$("savetoken").addEventListener("click", () => {
+  token = $("token").value.trim();
+  try { sessionStorage.setItem("mt-token", token); } catch (e) {}
+  $("tokenbox").hidden = true; refresh();
+});
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

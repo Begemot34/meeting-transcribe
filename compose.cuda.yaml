@@ -1,0 +1,25 @@
+# NVIDIA GPU over compose.yaml: the cuda image and the host GPU for both services.
+#   docker compose -f compose.yaml -f compose.cuda.yaml build
+#   docker compose -f compose.yaml -f compose.cuda.yaml up -d serve
+# docker needs the NVIDIA Container Toolkit; podman-compose reads the same `deploy` block through CDI on recent
+# versions — if yours does not, replace it with  devices: ["nvidia.com/gpu=all"]
+x-gpu: &gpu
+  image: localhost/meeting-transcribe:cuda
+  build:
+    context: .
+    dockerfile: Containerfile
+    args:
+      DEVICE: cuda
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  transcribe: *gpu
+  serve: *gpu

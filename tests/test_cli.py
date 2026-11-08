@@ -12,7 +12,7 @@ from conftest import ROOT, run_cli
 
 BASH = "/bin/bash" if sys.platform == "darwin" else "bash"
 COMMANDS = ["auto", "asr", "frames", "badges", "strip", "merge", "summarize", "export", "setup", "doctor",
-            "install-skill", "uninstall-skill"]
+            "install-skill", "uninstall-skill", "serve"]
 
 
 def transcribe(*args, home, mt_config=None):

@@ -11,6 +11,9 @@
 #   ./transcribe-container --cuda setup --language ru,en --summary none --yes
 #   MT_DEVICE=cuda ./transcribe-container --cuda auto meeting.mp4 out/board-1105
 # Summary via a local Ollama on the host: set OLLAMA_HOST=http://host.containers.internal:11434
+# As a service (inbox ./data/inbox, web UI at http://127.0.0.1:8080/, Ctrl+C stops it):
+#   ./transcribe-container serve
+# for a service that restarts on its own and listens on the network use compose.yaml instead
 #
 # Flags before the transcribe command:
 #   --cuda       image localhost/meeting-transcribe:cuda + the host GPU (nvidia.com/gpu=all)
@@ -18,7 +21,7 @@
 #   --build      rebuild the image first
 #   --pull       podman pull the image first (a localhost image cannot be pulled — use --build)
 #   --build and --pull: use one, not both
-#   A foreign --image (not localhost/meeting-transcribe*) gets no MT_LLM_API_KEY/HF_TOKEN
+#   A foreign --image (not localhost/meeting-transcribe*) gets no MT_LLM_API_KEY/HF_TOKEN/MT_SERVE_TOKEN/AWS_*
 set -euo pipefail
 [ "$(uname -s)" = Linux ] || { printf 'transcribe-container: Linux only; on macOS run ./transcribe directly\n' >&2; exit 2; }
 
@@ -58,6 +61,23 @@ case "${1:-}" in
   export|summarize) npaths=1 ;;
   *) npaths=0 ;;
 esac
+# serve: the data folder must be under the mounted directory too; it is passed in as an absolute path
+SERVE=()
+if [ "${1:-}" = serve ]; then
+  data="$(realpath -m -- "${MT_SERVE_DATA:-data}" 2>/dev/null || printf '%s' "${MT_SERVE_DATA:-data}")"
+  case "$data" in
+    "$PDIR"/*) ;;
+    *) printf 'transcribe-container: MT_SERVE_DATA=%s resolves outside the current directory — the container mounts only it\n' "$data" >&2; exit 2 ;;
+  esac
+  for arg in "${@:2}"; do
+    case "$arg" in --data|--data=*|--port|--port=*|--host|--host=*) printf 'transcribe-container: serve takes the data folder and the port from MT_SERVE_DATA and MT_SERVE_PORT here, not from %s\n' "$arg" >&2; exit 2 ;; esac
+  done
+  mkdir -p "$data/inbox"
+  export MT_SERVE_DATA="$data"
+  port="${MT_SERVE_PORT:-8080}"
+  # --init reaps the pipeline's children; only this machine reaches the port
+  SERVE=(--init -p "127.0.0.1:$port:$port")
+fi
 if [ "$npaths" -gt 0 ]; then
   skip="" pos=0
   for arg in "${@:2}"; do
@@ -133,7 +153,7 @@ podman volume exists "$VOL" || podman volume create "$VOL"
 
 # MT_*/HF_* settings, the Ollama address, proxies and the pyannote metrics switch follow the
 # shell into the container; variables that are not set are not passed at all.
-# Secrets (MT_LLM_API_KEY, HF_TOKEN) go only to localhost/meeting-transcribe images.
+# Secrets (MT_LLM_API_KEY, HF_TOKEN, MT_SERVE_TOKEN, AWS_* of serve) go only to localhost/meeting-transcribe images.
 TRUSTED=1
 case "$IMAGE" in localhost/meeting-transcribe | localhost/meeting-transcribe:*) ;; *) TRUSTED="" ;; esac
 
@@ -141,14 +161,15 @@ ENV_FLAGS=()
 SKIPPED=""
 while IFS='=' read -r name _; do
   case "$name" in
-    MT_*|HF_*|OLLAMA_HOST|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|PYANNOTE_METRICS_ENABLED) ;;
+    MT_*|HF_*|OLLAMA_HOST|HTTPS_PROXY|HTTP_PROXY|NO_PROXY|PYANNOTE_METRICS_ENABLED|TZ) ;;
+    AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN) [ "${1:-}" = serve ] || continue ;;
     *) continue ;;
   esac
   case "$name" in
     # the image points these caches at /cache; a host value would shadow the volume layout
     HF_HOME | HF_HUB_CACHE | MT_EASYOCR_DIR) continue ;;
   esac
-  if [ -z "$TRUSTED" ] && { [ "$name" = MT_LLM_API_KEY ] || [ "$name" = HF_TOKEN ]; }; then
+  if [ -z "$TRUSTED" ] && case "$name" in MT_LLM_API_KEY|HF_TOKEN|MT_SERVE_TOKEN|AWS_*) true ;; *) false ;; esac; then
     SKIPPED="$SKIPPED $name"
     continue
   fi
@@ -166,6 +187,7 @@ exec podman run --rm \
   --userns=keep-id \
   --security-opt label=disable \
   "${GPU[@]}" \
+  "${SERVE[@]}" \
   -v "$VOL:/cache" \
   -v "$PWD:$PWD" \
   -w "$PWD" \

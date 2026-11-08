@@ -10,7 +10,7 @@ from conftest import ROOT, SCRIPTS
 DOCS = sorted(ROOT.glob("*.md"))
 PAIRS = [("COMMANDS.md", "COMMANDS.ru.md"), ("SETTINGS.md", "SETTINGS.ru.md"), ("README.md", "README.ru.md")]
 SCRIPT_OF = {"frames": "frames", "badges": "badges", "strip": "strip", "merge": "merge", "summarize": "summarize",
-             "export": "export"}
+             "export": "export", "serve": "serve"}
 BASH_PARSER = {"auto": "cmd_auto", "asr": "cmd_asr", "setup": "cmd_setup", "doctor": "parse_language"}
 INTERNAL = {"summarize": {"--check", "--list"}}  # used by setup to test a backend, not by people
 FLAG = re.compile(r"(?<![\w-])(--?[a-z][a-z-]*)")

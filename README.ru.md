@@ -70,6 +70,10 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 
 Требования, образ для CUDA и compose — в [CONTAINER.ru.md](CONTAINER.ru.md).
 
+Сервисом для команды: `docker compose up -d serve` берёт записи из папки или из браузера, обрабатывает их в
+очереди и отдаёт результаты в веб-интерфейсе, в папке, через HTTP API, webhook или S3. Как поднять:
+[сервис в контейнере](CONTAINER.ru.md#сервис).
+
 ## Результаты работы
 
 <picture>

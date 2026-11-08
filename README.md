@@ -72,6 +72,10 @@ you transcribe from the folder that holds the recording.
 
 Requirements, the CUDA image and compose — in [CONTAINER.md](CONTAINER.md).
 
+As a service for a team: `docker compose up -d serve` takes recordings from a folder or the browser, processes them
+in a queue and gives the results back in the web UI, the folder, an HTTP API, a webhook or S3. How to set it up:
+[service in a container](CONTAINER.md#service).
+
 ## Results
 
 <picture>
