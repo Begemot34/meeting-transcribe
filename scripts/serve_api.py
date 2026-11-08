@@ -123,7 +123,11 @@ def build_app(svc) -> FastAPI:
         except KeyError:
             raise HTTPException(404, f"no file {name} in job {job_id}") from None
         if name.endswith(".html"):
-            return FileResponse(path, media_type="text/html; charset=utf-8")
+            # the page is opened from the origin of the API: sandboxed, its scripts get an origin of their own and
+            # cannot read the token of the UI or send it requests; the page itself only needs its own script
+            return FileResponse(path, media_type="text/html; charset=utf-8", headers={
+                "Content-Security-Policy": "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
+                "X-Content-Type-Options": "nosniff"})
         types = {".pdf": "application/pdf", ".md": "text/markdown; charset=utf-8", ".txt": "text/plain; charset=utf-8"}
         download = f"{job.out_dir}.md" if name == "transcript.md" else (
             f"{job.id}.log.txt" if name == "log.txt" else name)

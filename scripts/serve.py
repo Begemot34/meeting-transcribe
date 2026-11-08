@@ -16,14 +16,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from serve_inbox import Scanner  # noqa: E402
-from serve_jobs import INCOMING, JobStore  # noqa: E402
+from serve_jobs import INCOMING, JobStore, log  # noqa: E402
 from serve_worker import S3Sink, WorkerPool  # noqa: E402
 
 TRUE, FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off", "")
-
-
-def log(msg):
-    print(f"\033[1;34m[transcribe]\033[0m {msg}", file=sys.stderr, flush=True)
 
 
 def die(msg):

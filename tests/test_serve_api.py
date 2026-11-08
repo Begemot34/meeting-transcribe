@@ -88,6 +88,7 @@ def test_upload_runs_to_done(make):
     assert md.status_code == 200 and md.text.startswith("# T") and "attachment" in md.headers["content-disposition"]
     html = c.get(f"/api/jobs/{job['id']}/files/планёрка.html")
     assert html.status_code == 200 and html.headers["content-type"].startswith("text/html")
+    assert html.headers["content-security-policy"].startswith("sandbox allow-scripts")  # no access to the UI origin
     assert "attempt 1" in c.get(f"/api/jobs/{job['id']}/log").text
     assert list(svc.store.incoming.iterdir()) == []
 

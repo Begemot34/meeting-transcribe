@@ -8,13 +8,12 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import threading
 import time
 import urllib.request
 from pathlib import Path
 
-from serve_jobs import Job, JobStore, Options, now_utc, options_to_args
+from serve_jobs import Job, JobStore, Options, log, now_utc, options_to_args
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 PREFIX = "[transcribe] "
@@ -34,10 +33,6 @@ STEPS = [
     (re.compile(r"^pdf: "), "done", 100),
 ]
 WARNING = re.compile(r"^\[transcribe\] (naming the speakers failed|the summary failed)")
-
-
-def log(msg):
-    print(f"\033[1;34m[transcribe]\033[0m {msg}", file=sys.stderr, flush=True)
 
 
 def clean(line: str) -> str:

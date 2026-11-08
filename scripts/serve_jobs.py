@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,10 @@ INCOMING = ".incoming"
 # allowed state changes; anything else is a programming or API error (409)
 TRANSITIONS = {("queued", "running"), ("queued", "failed"), ("running", "done"), ("running", "failed"),
                ("running", "queued"), ("failed", "queued"), ("done", "queued")}
+
+
+def log(msg):
+    print(f"\033[1;34m[transcribe]\033[0m {msg}", file=sys.stderr, flush=True)
 
 
 class BadOptions(ValueError):

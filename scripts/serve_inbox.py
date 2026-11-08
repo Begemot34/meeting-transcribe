@@ -2,20 +2,15 @@
 taken once its size and mtime have not changed for `stable_s` seconds, so a copy in progress is left alone."""
 import dataclasses
 import json
-import sys
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from serve_jobs import BadOptions, JobStore, allowed, parse_options
+from serve_jobs import BadOptions, JobStore, allowed, log, parse_options
 
 IGNORED_SUFFIXES = (".part", ".tmp", ".crdownload", ".filepart", ".download", ".json")
 RETRY_AFTER_S = 600  # a file that could not be taken (no permission, disk full) is tried again this much later
-
-
-def log(msg):
-    print(f"\033[1;34m[transcribe]\033[0m {msg}", file=sys.stderr, flush=True)
 
 
 def ignored(name: str) -> bool:
