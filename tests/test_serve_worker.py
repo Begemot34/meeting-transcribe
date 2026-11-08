@@ -3,6 +3,7 @@ shutdown, parallel workers, the webhook and the S3 upload."""
 import http.server
 import json
 import os
+import shutil
 import threading
 import time
 
@@ -148,6 +149,7 @@ def test_stop_group_waits_for_the_whole_group():
     assert not group_alive(proc.pid)
 
 
+@pytest.mark.skipif(shutil.which("ps") is None, reason="without ps the service leaves old processes alone")
 def test_a_new_attempt_stops_the_old_one_and_its_lock(store, tmp_path):
     import subprocess
     job = make_job(store, tmp_path)

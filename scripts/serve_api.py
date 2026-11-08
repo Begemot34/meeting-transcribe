@@ -68,7 +68,8 @@ def build_app(svc) -> FastAPI:
         return {"jobs": [j.to_dict() for j in store.all(limit=max(1, min(limit, 1000)))]}
 
     # PUT too: `curl -T file` uploads with PUT
-    @api.api_route("/jobs", methods=["POST", "PUT"], status_code=201)
+    @api.post("/jobs", status_code=201, operation_id="upload")
+    @api.put("/jobs", status_code=201, operation_id="upload_put", include_in_schema=False)
     async def upload(request: Request):
         q = request.query_params
         name = (q.get("name") or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
