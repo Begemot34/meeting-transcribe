@@ -70,9 +70,24 @@ git clone https://github.com/Begemot34/meeting-transcribe.git && cd meeting-tran
 
 Требования, образ для CUDA и compose — в [CONTAINER.ru.md](CONTAINER.ru.md).
 
-Сервисом для команды: `docker compose up -d serve` берёт записи из папки или из браузера, обрабатывает их в
-очереди и отдаёт результаты в веб-интерфейсе, в папке, через HTTP API, webhook или S3. Как поднять:
-[сервис в контейнере](CONTAINER.ru.md#сервис).
+### Сервисом
+
+`docker compose up -d serve` держит meeting-transcribe запущенным для команды: люди отдают записи, сервис
+расшифровывает их по очереди и возвращает результаты.
+
+- **Вход:** запись в папке inbox, загрузка в веб-интерфейсе или через HTTP API.
+- **Очередь:** по умолчанию одна запись за раз, больше — через `MT_SERVE_WORKERS`; прогресс, отмена и повтор в
+  интерфейсе.
+- **Выход:** Markdown, HTML и PDF в веб-интерфейсе и в папке данных, через API, webhook или копией в S3 (AWS,
+  Cloudflare R2 и другие S3-совместимые хранилища).
+- **Доступ:** по умолчанию только с этой машины; для сети — необязательный токен.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/serve-dark.png">
+  <img src="docs/serve-light.png" width="900" alt="Веб-интерфейс сервиса: зона загрузки и очередь записей с прогрессом и ссылками на результаты">
+</picture>
+
+Как поднять: [сервис в контейнере](CONTAINER.ru.md#сервис).
 
 ## Результаты работы
 

@@ -72,9 +72,23 @@ you transcribe from the folder that holds the recording.
 
 Requirements, the CUDA image and compose — in [CONTAINER.md](CONTAINER.md).
 
-As a service for a team: `docker compose up -d serve` takes recordings from a folder or the browser, processes them
-in a queue and gives the results back in the web UI, the folder, an HTTP API, a webhook or S3. How to set it up:
-[service in a container](CONTAINER.md#service).
+### As a service
+
+`docker compose up -d serve` keeps meeting-transcribe running for a team: people drop recordings, the service
+transcribes them one after another and hands back the results.
+
+- **In:** a recording dropped into the inbox folder, uploaded in the web UI, or sent to the HTTP API.
+- **Queue:** one recording at a time by default, more with `MT_SERVE_WORKERS`; progress, cancel and retry in the UI.
+- **Out:** Markdown, HTML and PDF in the web UI and the data folder, through the API, a webhook, or copied to S3
+  (AWS, Cloudflare R2 and other S3-compatible storage).
+- **Access:** this machine only by default; an optional token for the network.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/serve-dark.png">
+  <img src="docs/serve-light.png" width="900" alt="Web UI of the service: an upload area and a queue of recordings with progress and result links">
+</picture>
+
+How to set it up: [service in a container](CONTAINER.md#service).
 
 ## Results
 
