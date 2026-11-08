@@ -94,7 +94,7 @@ is faster, since it uses the Apple GPU.
 or upload it in the browser, and pick up the HTML, PDF or Markdown when it is ready.
 
 ```bash
-mkdir -p data/inbox        # before the first start: otherwise docker creates ./data as root
+mkdir -p data/inbox   # before the first start: otherwise docker creates ./data owned by root
 docker compose run --rm transcribe setup --language ru,en --summary none --yes   # models, once
 docker compose up -d serve
 docker compose logs -f serve
@@ -103,6 +103,23 @@ docker compose logs -f serve
 The web UI and the API are at `http://127.0.0.1:8080/`. Compose publishes the port only on this machine; to open
 it to the network change `ports` in `compose.yaml` to `"8080:8080"` and set `MT_SERVE_TOKEN`. Without compose:
 `transcribe-container serve` (Linux, stops with Ctrl+C), or `./transcribe serve` on the host.
+
+**Folders and settings.** Compose reads `.env` next to `compose.yaml` (it is in `.gitignore`): put the
+`MT_SERVE_*` settings there and the host folder with `inbox/` and `jobs/` in `MT_DATA_DIR`. An inbox in a folder
+of its own, e.g. a network share, comes with `compose.inbox.yaml`:
+
+```bash
+MT_DATA_DIR=/srv/meetings
+MT_SERVE_WORKERS=1
+MT_SERVE_TOKEN=change-me
+# the inbox on a share:
+COMPOSE_FILE=compose.yaml:compose.inbox.yaml
+MT_INBOX_DIR=/mnt/share/meetings-in
+```
+
+A recording in the separate inbox is copied into its job folder, not moved, then deleted from the inbox: a rename
+does not cross mounts. Outside compose the folders are `MT_SERVE_INBOX` and `MT_SERVE_JOBS`. Compose checks `/healthz` every 30
+seconds, so `docker compose ps` shows whether the service is healthy.
 
 **How a recording travels.** `data/` holds two folders:
 
@@ -149,7 +166,7 @@ on the CPU give it hours (e.g. `21600`).
 - through the API, below.
 
 **API.** With `MT_SERVE_TOKEN` set, every `/api/*` call needs `Authorization: Bearer <token>` (or `?token=` in a
-link). The interactive description is at `/api/docs`.
+link). The interactive description is at `/api/docs` while no token is set.
 
 | Call | What it does |
 | --- | --- |
@@ -160,7 +177,7 @@ link). The interactive description is at `/api/docs`.
 | `GET /api/jobs/<id>/log?tail=200` | the end of the log |
 | `POST /api/jobs/<id>/retry` | run a finished or failed job again |
 | `POST /api/jobs/<id>/cancel` | stop a queued or running job |
-| `DELETE /api/jobs/<id>` | delete a finished job with its files |
+| `DELETE /api/jobs/<id>` | delete a job that is not running, with its files |
 | `GET /healthz` | liveness and queue size, no token needed |
 
 ```bash
@@ -172,7 +189,7 @@ curl -OJ -H "Authorization: Bearer $MT_SERVE_TOKEN" http://127.0.0.1:8080/api/jo
 
 Behind a reverse proxy raise its body limit for uploads (nginx: `client_max_body_size 8g;`). Finished jobs are
 kept until deleted; `MT_SERVE_KEEP_DAYS` deletes old ones, `MT_SERVE_KEEP_SOURCE=0` deletes the recording after
-a successful run. Every setting: [settings of the service](SETTINGS.md#service).
+a successful run. One data folder serves one service: a second one on the same `jobs/` refuses to start. Every setting: [settings of the service](SETTINGS.md#service).
 
 The service dependencies (fastapi, uvicorn, boto3) are in the image. On the host `./transcribe serve` installs them
 on its first start, and again after a dependency update.

@@ -11,6 +11,7 @@ from pathlib import Path
 from serve_jobs import BadOptions, JobStore, allowed, parse_options
 
 IGNORED_SUFFIXES = (".part", ".tmp", ".crdownload", ".filepart", ".download", ".json")
+RETRY_AFTER_S = 600  # a file that could not be taken (no permission, disk full) is tried again this much later
 
 
 def log(msg):
@@ -65,11 +66,12 @@ def sidecar_for(video: Path) -> Path | None:
 
 class Scanner(threading.Thread):
     def __init__(self, inbox: Path, store: JobStore, submit: Callable[[str], None], poll_s: float, stable_s: float,
-                 stop: threading.Event):
+                 stop: threading.Event, notify: Callable | None = None, retry_after_s: float = RETRY_AFTER_S):
         super().__init__(name="inbox", daemon=True)
-        self.inbox, self.store, self.submit = Path(inbox), store, submit
-        self.poll_s, self.stable_s, self.stop = poll_s, stable_s, stop
+        self.inbox, self.store, self.submit, self.notify = Path(inbox), store, submit, notify
+        self.poll_s, self.stable_s, self.stop, self.retry_after_s = poll_s, stable_s, stop, retry_after_s
         self.seen: dict[str, Seen] = {}
+        self.failed: dict[str, float] = {}  # name → monotonic time it may be tried again
 
     def take(self, path: Path) -> None:
         sidecar = sidecar_for(path)
@@ -79,20 +81,28 @@ class Scanner(threading.Thread):
         except (ValueError, BadOptions) as e:  # json.JSONDecodeError is a ValueError
             job = self.store.create_failed(path, path.name, "inbox", f"bad sidecar: {e}", sidecar)
             log(f"inbox: {path.name} → job {job.id} failed: {job.error}")
+            if self.notify:
+                self.notify(job)
             return
         job = self.store.create(path, path.name, options, "inbox", sidecar)
         log(f"inbox: {path.name} → job {job.id}")
         self.submit(job.id)
 
     def scan(self) -> None:
-        for path in scan_once(self.inbox, self.seen, time.monotonic(), self.stable_s):
+        now = time.monotonic()
+        for path in scan_once(self.inbox, self.seen, now, self.stable_s):
+            if self.failed.get(path.name, 0) > now:
+                continue
             self.seen.pop(path.name, None)
             try:
                 self.take(path)
+                self.failed.pop(path.name, None)
             except FileNotFoundError:
                 continue  # removed between the listing and the move
-            except Exception as e:  # one bad file must not stop the inbox
-                log(f"inbox: {path.name} not taken: {e.__class__.__name__}: {e}")
+            except Exception as e:  # one bad file must not stop the inbox, nor be retried every few seconds
+                self.failed[path.name] = now + self.retry_after_s
+                log(f"inbox: {path.name} not taken, next try in {self.retry_after_s / 60:.0f} min: "
+                    f"{e.__class__.__name__}: {e}")
 
     def run(self):
         while not self.stop.is_set():

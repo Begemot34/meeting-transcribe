@@ -137,6 +137,72 @@ def test_cancel_running(store, tmp_path):
     wait_for(lambda: gone(pid), timeout=5)
 
 
+def test_stop_group_waits_for_the_whole_group():
+    import subprocess
+
+    from serve_worker import group_alive, stop_group
+    # bash dies on SIGTERM, the step it started ignores it: only SIGKILL ends the group
+    proc = subprocess.Popen(["bash", "-c", "(trap '' TERM; sleep 30) & sleep 30"], start_new_session=True)
+    time.sleep(0.3)
+    stop_group(proc.pid, 0.5, proc)
+    assert not group_alive(proc.pid)
+
+
+def test_a_new_attempt_stops_the_old_one_and_its_lock(store, tmp_path):
+    import subprocess
+    job = make_job(store, tmp_path)
+    d = store.job_dir(job.id)
+    # a leftover attempt: its command line names the job folder (`; true` keeps bash from exec-ing sleep)
+    old = subprocess.Popen(["bash", "-c", f"sleep 30; true {d}"], start_new_session=True)
+    lock = d / "board-meeting" / ".work" / ".asr.lock"
+    lock.mkdir(parents=True)
+    store.update(job.id, pid=old.pid)
+    pool_for(store).run_job(store.load(job.id))
+    old.wait(5)
+    assert store.load(job.id).state == "done" and not lock.exists()
+
+
+def test_an_unrelated_process_with_the_old_pid_is_left_alone(store, tmp_path):
+    import subprocess
+    job = make_job(store, tmp_path)
+    other = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        store.update(job.id, pid=other.pid)
+        pool_for(store).run_job(store.load(job.id))
+        assert other.poll() is None and store.load(job.id).state == "done"
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_worker_error_stops_the_pipeline(store, tmp_path, monkeypatch):
+    job = make_job(store, tmp_path)
+    pool = pool_for(store, env={"FAKE_SLEEP": "30"})
+    monkeypatch.setattr(pool, "_follow", lambda *a: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(OSError):
+        pool.run_job(job)
+    pid = store.load(job.id).pid
+    wait_for(lambda: gone(pid), timeout=5)
+    assert job.id not in pool.running
+
+
+def test_cancel_without_a_process_only_for_queued(store, tmp_path):
+    job = make_job(store, tmp_path)
+    store.update(job.id, state="running")
+    with pytest.raises(ValueError):
+        pool_for(store).cancel(job.id)
+    assert store.load(job.id).state == "running"
+
+
+def test_child_env_drops_service_secrets(monkeypatch):
+    from serve_worker import child_env
+    monkeypatch.setenv("MT_SERVE_TOKEN", "t")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s")
+    monkeypatch.setenv("MT_LANGUAGE", "ru")
+    env = child_env()
+    assert "MT_SERVE_TOKEN" not in env and "AWS_SECRET_ACCESS_KEY" not in env and env["MT_LANGUAGE"] == "ru"
+
+
 def test_cancel_queued(store, tmp_path):
     job = make_job(store, tmp_path)
     pool = pool_for(store)

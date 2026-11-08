@@ -97,7 +97,12 @@ ensure_env() {
   if [ "$build" = cuda ]; then size="~5 GB with the CUDA libraries"; fi
   if [ ! -x "$PY" ] || [ "$ROOT/uv.lock" -nt "$VENV/.synced" ] || [ "$synced" != "$build" ]; then
     log "installing dependencies ($build build of torch) into $VENV (first time: a few minutes, $size)…"
-    (cd "$ROOT" && uv sync --frozen --extra "$build" --python 3.11 --compile-bytecode --quiet >&2) \
+    # the service extra stays once `serve` installed it: a pipeline the service starts runs this too, and a sync
+    # without it would uninstall the service's own packages from under it
+    local extra=""
+    if [ -f "$VENV/.serve" ]; then extra="--extra serve"; fi
+    # shellcheck disable=SC2086  # $extra: no option or one, unquoted on purpose
+    (cd "$ROOT" && uv sync --frozen --extra "$build" $extra --python 3.11 --compile-bytecode --quiet >&2) \
       || die "dependency install failed (uv sync), see the output above"
     log "dependencies installed"
     echo "$build" > "$VENV/.synced"
@@ -841,6 +846,7 @@ cmd_serve() {  # the web dependencies are the extra `serve`: ensure_env syncs on
     (cd "$ROOT" && uv sync --frozen --extra "$build" --extra serve --python 3.11 --compile-bytecode --quiet >&2) \
       || die "dependency install failed (uv sync --extra serve), see the output above"
   fi
+  touch "$VENV/.serve" 2>/dev/null || true  # ensure_env keeps the extra from now on (the image's .venv is read-only)
   # exec: in a container the service is PID 1 and has to receive SIGTERM itself
   exec "$PY" -I "$S/serve.py" "$@"
 }

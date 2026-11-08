@@ -92,7 +92,7 @@ Compose работает и на macOS (Docker Desktop, только CPU); на 
 браузере, а когда она готова, забирают HTML, PDF или Markdown.
 
 ```bash
-mkdir -p data/inbox        # до первого запуска: иначе docker создаст ./data от root
+mkdir -p data/inbox   # до первого запуска: иначе docker создаст ./data от root
 docker compose run --rm transcribe setup --language ru,en --summary none --yes   # модели, один раз
 docker compose up -d serve
 docker compose logs -f serve
@@ -101,6 +101,23 @@ docker compose logs -f serve
 Веб-интерфейс и API — на `http://127.0.0.1:8080/`. Compose публикует порт только для этой машины; чтобы открыть
 его в сеть, замените `ports` в `compose.yaml` на `"8080:8080"` и задайте `MT_SERVE_TOKEN`. Без compose:
 `transcribe-container serve` (Linux, останавливается Ctrl+C) или `./transcribe serve` прямо на машине.
+
+**Папки и настройки.** Compose читает `.env` рядом с `compose.yaml` (он в `.gitignore`): туда кладут настройки
+`MT_SERVE_*`, а папку на хосте с `inbox/` и `jobs/` задаёт `MT_DATA_DIR`. Inbox в отдельной папке, например на
+сетевой шаре, подключается через `compose.inbox.yaml`:
+
+```bash
+MT_DATA_DIR=/srv/meetings
+MT_SERVE_WORKERS=1
+MT_SERVE_TOKEN=change-me
+# inbox на шаре:
+COMPOSE_FILE=compose.yaml:compose.inbox.yaml
+MT_INBOX_DIR=/mnt/share/meetings-in
+```
+
+Запись из отдельного inbox копируется в папку задачи, а не переносится, и затем удаляется из inbox:
+переименование не проходит между точками монтирования. Без compose папки задают `MT_SERVE_INBOX` и `MT_SERVE_JOBS`. Compose проверяет `/healthz` каждые 30 секунд, так
+что `docker compose ps` показывает, здоров ли сервис.
 
 **Путь записи.** В `data/` две папки:
 
@@ -146,7 +163,7 @@ Inbox проверяется каждые `MT_SERVE_POLL_S` секунд; фай
 - через API, ниже.
 
 **API.** Если задан `MT_SERVE_TOKEN`, каждый вызов `/api/*` требует `Authorization: Bearer <токен>` (или
-`?token=` в ссылке). Интерактивное описание — на `/api/docs`.
+`?token=` в ссылке). Интерактивное описание — на `/api/docs`, пока токен не задан.
 
 | Вызов | Что делает |
 | --- | --- |
@@ -157,7 +174,7 @@ Inbox проверяется каждые `MT_SERVE_POLL_S` секунд; фай
 | `GET /api/jobs/<id>/log?tail=200` | конец лога |
 | `POST /api/jobs/<id>/retry` | запустить завершённую или упавшую задачу снова |
 | `POST /api/jobs/<id>/cancel` | остановить задачу в очереди или в работе |
-| `DELETE /api/jobs/<id>` | удалить завершённую задачу с файлами |
+| `DELETE /api/jobs/<id>` | удалить задачу, которая сейчас не выполняется, с её файлами |
 | `GET /healthz` | жив ли сервис и размер очереди, без токена |
 
 ```bash
@@ -169,7 +186,7 @@ curl -OJ -H "Authorization: Bearer $MT_SERVE_TOKEN" http://127.0.0.1:8080/api/jo
 
 За reverse proxy поднимите его лимит тела запроса для загрузок (nginx: `client_max_body_size 8g;`). Завершённые
 задачи хранятся, пока их не удалят; `MT_SERVE_KEEP_DAYS` удаляет старые, `MT_SERVE_KEEP_SOURCE=0` удаляет запись
-после успешного запуска. Все настройки: [настройки сервиса](SETTINGS.ru.md#сервис).
+после успешного запуска. Одну папку данных обслуживает один сервис: второй на той же `jobs/` не запустится. Все настройки: [настройки сервиса](SETTINGS.ru.md#сервис).
 
 Зависимости сервиса (fastapi, uvicorn, boto3) уже есть в образе. На хосте `./transcribe serve` ставит их при
 первом запуске и снова после обновления зависимостей.

@@ -2,6 +2,7 @@
 No database: the folders are the queue, and a restart reads them back."""
 import dataclasses
 import errno
+import fcntl
 import json
 import os
 import re
@@ -119,13 +120,25 @@ def allowed(filename: str) -> bool:
 
 
 def move(src: Path, dst: Path) -> None:
-    """Atomic within one filesystem; a copy when the inbox is mounted from another one."""
+    """Atomic within one filesystem. Across filesystems (an inbox on another mount) a copy under a .part name,
+    renamed when complete — so `dst` is never a partial file — and then the source is deleted."""
     try:
         os.replace(src, dst)
     except OSError as e:
         if e.errno != errno.EXDEV:
             raise
-        shutil.move(str(src), str(dst))
+        part = dst.with_name(dst.name + ".part")
+        try:
+            shutil.copyfile(src, part)
+            os.replace(part, dst)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
+        try:
+            src.unlink()
+        except BaseException:
+            dst.unlink(missing_ok=True)  # the recording stays where it was, not in two places
+            raise
 
 
 @dataclasses.dataclass
@@ -170,6 +183,24 @@ class JobStore:
         self.root = Path(root)
         self.max_attempts = max_attempts
         self.lock = threading.RLock()
+        self._owner = None  # the open .lock file while this process owns the store
+
+    def acquire(self) -> None:
+        """One service per jobs folder: a second one would requeue the first one's running jobs and delete its
+        uploads in progress. The OS drops the lock when the process ends, however it ends."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        f = open(self.root / ".lock", "w")  # held open for the life of the process
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            raise RuntimeError(f"another service already works with {self.root}") from None
+        self._owner = f
+
+    def release(self) -> None:
+        if self._owner is not None:
+            self._owner.close()
+            self._owner = None
 
     @property
     def incoming(self) -> Path:
@@ -187,38 +218,65 @@ class JobStore:
         """YYYYMMDD-HHMMSS-<slug>, then -2, -3… while the folder exists. Local time: TZ sets the names."""
         base = f"{(now or datetime.now()):%Y%m%d-%H%M%S}-{slugify(stem)}"
         job_id, n = base, 1
-        while (self.root / job_id).exists():
+        while (self.root / job_id).exists() or (self.incoming / job_id).exists():
             n += 1
             job_id = f"{base}-{n}"
         return job_id
 
-    def _new(self, src: Path, name: str, origin: str, options: dict, sidecar: Path | None) -> tuple[Job, Path]:
+    @staticmethod
+    def _write(d: Path, job: Job) -> None:
+        tmp = d / "job.json.tmp"
+        tmp.write_text(json.dumps(job.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, d / "job.json")
+
+    def _publish(self, stage: Path, job: Job) -> None:
+        """A staged job becomes visible in one rename (both under jobs/, one filesystem)."""
+        with self.lock:
+            if (self.root / job.id).exists():  # only after a restart: the name was taken meanwhile
+                job.id = self.new_id(job.stem)
+                self._write(stage, job)
+            os.replace(stage, self.root / job.id)
+
+    def _new(self, src: Path, name: str, origin: str, options: dict, sidecar: Path | None,
+             error: str | None = None) -> Job:
+        """Builds the job in jobs/.incoming/<id>/ — job.json first, the sidecar, the recording last — and publishes
+        the folder when it is complete. A crash before the end leaves a staged folder that recover() finishes
+        (the recording is there) or drops (it is still in the inbox); nothing gets lost or stranded."""
         stem, ext = split_name(name)
+        size = src.stat().st_size
+        self.incoming.mkdir(parents=True, exist_ok=True)
         with self.lock:
             job_id = self.new_id(stem)
-            d = self.root / job_id
-            d.mkdir(parents=True)
-        size = src.stat().st_size
-        dst = d / (f"source.{ext}" if ext else "source")  # = source_path()
-        move(src, dst)
-        if sidecar is not None and sidecar.exists():
-            move(sidecar, d / "sidecar.json")
+            stage = self.incoming / job_id
+            stage.mkdir()
         job = Job(id=job_id, state="queued", created=now_utc(),
                   source={"name": name, "size": size, "origin": origin}, options=options, out_dir=slugify(stem))
-        return job, d
+        if error:
+            job.state, job.stage, job.error, job.finished = "failed", "failed", error, now_utc()
+        side = stage / "sidecar.json"
+        try:
+            self._write(stage, job)
+            if sidecar is not None and sidecar.exists():
+                move(sidecar, side)
+            move(src, stage / (f"source.{ext}" if ext else "source"))  # = source_path()
+        except BaseException:
+            if side.exists() and sidecar is not None:
+                try:
+                    move(side, sidecar)  # back next to the recording, which did not move
+                except OSError:
+                    pass
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+        self._publish(stage, job)
+        return job
 
     def create(self, src: Path, name: str, options: Options, origin: str, sidecar: Path | None = None) -> Job:
         """Moves the recording (and its sidecar) into a new job folder; the job is queued."""
-        job, _ = self._new(src, name, origin, dataclasses.asdict(options), sidecar)
-        self.save(job)
-        return job
+        return self._new(src, name, origin, dataclasses.asdict(options), sidecar)
 
     def create_failed(self, src: Path, name: str, origin: str, error: str, sidecar: Path | None = None) -> Job:
         """A recording that cannot run as given (a bad sidecar): it leaves the inbox as a failed job."""
-        job, _ = self._new(src, name, origin, dataclasses.asdict(Options()), sidecar)
-        job.state, job.stage, job.error, job.finished = "failed", "failed", error, now_utc()
-        self.save(job)
-        return job
+        return self._new(src, name, origin, dataclasses.asdict(Options()), sidecar, error=error)
 
     def load(self, job_id: str) -> Job:
         p = self.job_dir(job_id) / "job.json"
@@ -229,10 +287,8 @@ class JobStore:
 
     def save(self, job: Job) -> None:
         d = self.job_dir(job.id)
-        tmp = d / "job.json.tmp"
         with self.lock:
-            tmp.write_text(json.dumps(job.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, d / "job.json")
+            self._write(d, job)
 
     def update(self, job_id: str, **fields) -> Job:
         with self.lock:
@@ -282,15 +338,28 @@ class JobStore:
         shutil.rmtree(d)
 
     def recover(self) -> list[str]:
-        """At startup: jobs that were running go back to the queue (or fail after max_attempts interruptions);
-        partial uploads are removed. Returns the queued ids, oldest first."""
+        """At startup: jobs that were running go back to the queue (or fail after max_attempts starts); partial
+        uploads are removed; a job staged when the service died is published if its recording got there, else
+        dropped (the recording is still in the inbox). Returns the queued ids, oldest first. The pid of an
+        interrupted job stays: the next start stops what is left of that run."""
         if self.incoming.is_dir():
             for p in self.incoming.iterdir():
-                shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
+                if not p.is_dir():
+                    p.unlink(missing_ok=True)  # an upload cut off
+                    continue
+                try:
+                    job = Job.from_dict(json.loads((p / "job.json").read_text(encoding="utf-8")))
+                    ext = job.ext
+                    complete = (p / (f"source.{ext}" if ext else "source")).is_file()
+                except (OSError, ValueError, TypeError, KeyError):
+                    complete = False
+                if complete:
+                    self._publish(p, job)
+                else:
+                    shutil.rmtree(p, ignore_errors=True)
         queued = []
         for job in sorted(self.all(), key=lambda j: (j.created, j.id)):
             if job.state == "running":
-                job.pid = None
                 if job.attempts < self.max_attempts:
                     job.state, job.stage = "queued", "queued"
                 else:
@@ -306,10 +375,15 @@ class JobStore:
             return []
         limit = (now or datetime.now(timezone.utc)) - timedelta(days=keep_days)
         gone = []
-        for job in self.all():
-            if job.state in ("done", "failed") and job.finished and datetime.fromisoformat(job.finished) < limit:
-                self.delete(job.id)
-                gone.append(job.id)
+        for old in self.all():
+            with self.lock:  # again under the lock: a retry may have queued it since the listing
+                try:
+                    job = self.load(old.id)
+                except KeyError:
+                    continue
+                if job.state in ("done", "failed") and job.finished and datetime.fromisoformat(job.finished) < limit:
+                    self.delete(job.id)
+                    gone.append(job.id)
         return gone
 
     def source_path(self, job: Job) -> Path:

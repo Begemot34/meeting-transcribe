@@ -2,9 +2,11 @@
 data folder (POST or PUT): no multipart, no spooling a multi-GB recording through /tmp."""
 import hmac
 import uuid
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+from starlette.concurrency import run_in_threadpool
 from serve_jobs import BadOptions, allowed, parse_options
 from serve_worker import clean
 
@@ -15,9 +17,26 @@ CHUNK = 1 << 20
 def build_app(svc) -> FastAPI:
     """svc: serve.Service — .store, .pool, .cfg (token, max_upload_mb, data, workers), .ui_html."""
     store, pool, cfg = svc.store, svc.pool, svc.cfg
-    app = FastAPI(title="meeting-transcribe", docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
+    # the interactive API description only without a token: FastAPI serves it outside the router that checks it
+    docs = {} if cfg.token else {"docs_url": "/api/docs", "openapi_url": "/api/openapi.json"}
+    app = FastAPI(title="meeting-transcribe", redoc_url=None, **({"docs_url": None, "openapi_url": None} | docs))
+
+    def same_site(request: Request):
+        """A page on another site may send simple POSTs here (a form, fetch without CORS) — without a token they
+        would upload, retry and cancel. Browsers say where a request comes from; curl and scripts say nothing."""
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return
+        site = request.headers.get("sec-fetch-site")
+        if site is not None:
+            if site not in ("same-origin", "none"):
+                raise HTTPException(403, "cross-site request refused")
+            return
+        origin = request.headers.get("origin")
+        if origin and urlsplit(origin).netloc != request.headers.get("host"):
+            raise HTTPException(403, "cross-site request refused")
 
     def auth(request: Request):
+        same_site(request)
         if not cfg.token:
             return
         header = request.headers.get("authorization", "")
@@ -36,7 +55,7 @@ def build_app(svc) -> FastAPI:
         jobs = store.all()
         return {"ok": True, "queued": sum(j.state == "queued" for j in jobs),
                 "running": sum(j.state == "running" for j in jobs), "workers": cfg.workers,
-                "inbox": str(cfg.data / "inbox")}
+                "inbox": str(cfg.inbox)}
 
     @app.get("/", response_class=HTMLResponse)
     def ui():
@@ -60,6 +79,10 @@ def build_app(svc) -> FastAPI:
         except BadOptions as e:
             raise HTTPException(400, str(e)) from None
         limit = int(cfg.max_upload_mb * (1 << 20))
+        too_large = f"the recording is larger than {cfg.max_upload_mb:g} MB (MT_SERVE_MAX_UPLOAD_MB)"
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            raise HTTPException(413, too_large)  # before a byte is read
         store.incoming.mkdir(parents=True, exist_ok=True)
         part = store.incoming / f"{uuid.uuid4().hex}.part"
         size = 0
@@ -68,12 +91,11 @@ def build_app(svc) -> FastAPI:
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > limit:
-                        raise HTTPException(413, f"the recording is larger than {cfg.max_upload_mb} MB "
-                                                 "(MT_SERVE_MAX_UPLOAD_MB)")
-                    f.write(chunk)
+                        raise HTTPException(413, too_large)
+                    await run_in_threadpool(f.write, chunk)  # slow storage must not stall other requests
             if size == 0:
                 raise HTTPException(400, "empty body: send the recording as the request body (curl -T file)")
-            job = store.create(part, name, options, "upload")
+            job = await run_in_threadpool(store.create, part, name, options, "upload")
         except BaseException:
             part.unlink(missing_ok=True)
             raise

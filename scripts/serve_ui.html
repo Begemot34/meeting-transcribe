@@ -110,7 +110,24 @@ try { token = sessionStorage.getItem("mt-token") || ""; } catch (e) { /* storage
 let file = null, logJob = null;
 
 function headers() { return token ? { Authorization: "Bearer " + token } : {}; }
-function withToken(url) { return token ? url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : url; }
+// with a token the files come through fetch with the header, not a ?token= link: a link would put the token
+// into the browser history and the logs of any proxy on the way
+async function openFile(ev, url, fileName, inline) {
+  if (!token) return;  // a plain link works
+  ev.preventDefault();
+  const win = inline ? window.open("", "_blank") : null;  // opened now, inside the click: no popup blocker
+  try {
+    const r = await fetch(url, { headers: headers() });
+    if (!r.ok) throw new Error(r.status === 401 ? "token required" : r.statusText);
+    const blobUrl = URL.createObjectURL(await r.blob());
+    if (win) win.location = blobUrl;
+    else el("a", { href: blobUrl, download: fileName }).click();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  } catch (e) {
+    if (win) win.close();
+    window.alert(e.message);
+  }
+}
 function el(tag, attrs, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -134,7 +151,9 @@ function row(j) {
   const links = el("div", { class: "actions" });
   for (const a of j.artifacts) {
     const label = a.endsWith(".html") ? "HTML" : a.endsWith(".pdf") ? "PDF" : "Markdown";
-    links.append(el("a", { href: withToken(`/api/jobs/${encodeURIComponent(j.id)}/files/${encodeURIComponent(a)}`), target: "_blank" }, label));
+    const url = `/api/jobs/${encodeURIComponent(j.id)}/files/${encodeURIComponent(a)}`;
+    const fileName = a === "transcript.md" ? j.out_dir + ".md" : a;
+    links.append(el("a", { href: url, target: "_blank", onclick: (ev) => openFile(ev, url, fileName, a.endsWith(".html")) }, label));
   }
   links.append(el("a", { href: "#", onclick: (ev) => { ev.preventDefault(); showLog(j.id); } }, "log"));
   const btns = el("div", { class: "actions" });

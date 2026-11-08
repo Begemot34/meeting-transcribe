@@ -1,4 +1,4 @@
-"""./transcribe serve: watches <data>/inbox for recordings, runs `transcribe auto` on each in a queue with N workers,
+"""./transcribe serve: watches the inbox (<data>/inbox) for recordings, runs `transcribe auto` on each in a queue with N workers,
 and serves the results through a web UI and an HTTP API (plus an optional webhook and S3 upload).
 
     serve.py [--data DIR] [--host H] [--port N] [--workers N]
@@ -34,7 +34,9 @@ def die(msg):
 @dataclasses.dataclass
 class Config:
     data: Path
-    host: str = "0.0.0.0"
+    inbox: Path | None = None  # None: <data>/inbox
+    jobs: Path | None = None  # None: <data>/jobs
+    host: str = "127.0.0.1"  # this machine only; the image sets 0.0.0.0, compose publishes on 127.0.0.1
     port: int = 8080
     workers: int = 1
     poll_s: float = 5.0
@@ -52,6 +54,10 @@ class Config:
     s3_endpoint: str | None = None
     s3_region: str | None = None
     transcribe: Path = HERE.parent / "transcribe"
+
+    def __post_init__(self):
+        self.inbox = self.inbox or self.data / "inbox"
+        self.jobs = self.jobs or self.data / "jobs"
 
 
 def _num(env, name, default, kind):
@@ -78,7 +84,7 @@ def _bool(env, name, default):
 def parse_args(argv=None):
     p = argparse.ArgumentParser(prog="transcribe serve", description=__doc__.split("\n\n")[0])
     p.add_argument("--data", type=Path, help="data folder with inbox/ and jobs/ (MT_SERVE_DATA, default ./data)")
-    p.add_argument("--host", help="address to listen on (MT_SERVE_HOST, default 0.0.0.0)")
+    p.add_argument("--host", help="address to listen on (MT_SERVE_HOST, default 127.0.0.1)")
     p.add_argument("--port", type=int, help="port (MT_SERVE_PORT, default 8080)")
     p.add_argument("--workers", type=int, help="recordings processed at once (MT_SERVE_WORKERS, default 1)")
     return p.parse_args(argv)
@@ -86,9 +92,12 @@ def parse_args(argv=None):
 
 def config_from(args, env) -> Config:
     s = lambda name: env.get(name, "").strip() or None  # noqa: E731
+    path = lambda name: Path(s(name)).expanduser().absolute() if s(name) else None  # noqa: E731
     cfg = Config(
         data=Path(args.data or s("MT_SERVE_DATA") or "data").expanduser().absolute(),
-        host=args.host or s("MT_SERVE_HOST") or "0.0.0.0",
+        inbox=path("MT_SERVE_INBOX"),
+        jobs=path("MT_SERVE_JOBS"),
+        host=args.host or s("MT_SERVE_HOST") or "127.0.0.1",
         port=args.port if args.port is not None else _num(env, "MT_SERVE_PORT", 8080, int),
         workers=args.workers if args.workers is not None else _num(env, "MT_SERVE_WORKERS", 1, int),
         poll_s=_num(env, "MT_SERVE_POLL_S", 5.0, float),
@@ -120,26 +129,32 @@ class Service:
     def __init__(self, cfg: Config, env: dict | None = None, s3_client=None, tick: float = 1.0):
         self.cfg = cfg
         self.stop = threading.Event()
-        self.store = JobStore(cfg.data / "jobs", max_attempts=cfg.max_attempts)
+        self.store = JobStore(cfg.jobs, max_attempts=cfg.max_attempts)
         s3 = None
         if cfg.s3_bucket:
             s3 = S3Sink(cfg.s3_bucket, cfg.s3_prefix, cfg.s3_endpoint, cfg.s3_region, client=s3_client)
         self.pool = WorkerPool(self.store, cfg.transcribe, workers=cfg.workers, timeout_s=cfg.timeout_s,
                                keep_work=cfg.keep_work, keep_source=cfg.keep_source, webhook_url=cfg.webhook_url,
                                s3=s3, stop=self.stop, env=env, tick=tick)
-        self.scanner = Scanner(cfg.data / "inbox", self.store, self.pool.submit, cfg.poll_s, cfg.stable_s, self.stop)
+        self.scanner = Scanner(cfg.inbox, self.store, self.pool.submit, cfg.poll_s, cfg.stable_s, self.stop,
+                               notify=self.pool.notify)
         self.ui_html = (HERE / "serve_ui.html").read_text(encoding="utf-8")
 
     def prepare(self) -> list[str]:
         """Folders, the write check and the jobs a previous run left; returns the ids to queue."""
-        for d in (self.cfg.data / "inbox", self.cfg.data / "jobs" / INCOMING):
+        for d in (self.cfg.inbox, self.cfg.jobs / INCOMING):
             try:
                 d.mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 die(f"cannot create {d}: {e} — create the data folder as the user the service runs as")
-        if not os.access(self.cfg.data / "jobs", os.W_OK) or not os.access(self.cfg.data / "inbox", os.W_OK):
-            die(f"{self.cfg.data} is not writable for uid {os.getuid()} — in a container create ./data on the host "
-                "before the first start (mkdir -p data/inbox) so it is not owned by root")
+        for d in (self.cfg.inbox, self.cfg.jobs):
+            if not os.access(d, os.W_OK):
+                die(f"{d} is not writable for uid {os.getuid()} — in a container create the folder on the host before "
+                    "the first start (mkdir -p …), so docker does not create it owned by root")
+        try:
+            self.store.acquire()  # before recover(): it touches jobs a second instance would be running
+        except RuntimeError as e:
+            die(f"{e} — stop it first; two services on one folder would run every job twice")
         return self.store.recover()
 
     def start(self) -> None:
@@ -163,6 +178,7 @@ class Service:
         self.stop.set()
         self.scanner.join(5)
         self.pool.shutdown()
+        self.store.release()
 
 
 def main(argv=None):
@@ -177,13 +193,22 @@ def main(argv=None):
     svc = Service(cfg)
     svc.start()
     extras = [f"webhook {cfg.webhook_url}"] * bool(cfg.webhook_url) + [f"S3 {cfg.s3_bucket}"] * bool(cfg.s3_bucket)
-    log(f"watching {cfg.data / 'inbox'}, {cfg.workers} worker(s); UI and API at http://{cfg.host}:{cfg.port}/"
+    log(f"watching {cfg.inbox}, results in {cfg.jobs}, {cfg.workers} worker(s); UI and API at http://{cfg.host}:{cfg.port}/"
         + (" (token required)" if cfg.token else " (no token: keep it on a trusted network)")
         + (f"; {', '.join(extras)}" if extras else ""))
-    server = uvicorn.Server(uvicorn.Config(build_app(svc), host=cfg.host, port=cfg.port, log_level="warning",
-                                           access_log=False))
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            # while it runs, uvicorn's own handler gets the signal: the jobs start stopping at once, in parallel
+            # with the HTTP drain, so both fit into the container's stop timeout (compose: 30 s)
+            svc.stop.set()
+            super().handle_exit(sig, frame)
+
+    # an upload in progress is cut off after 10 s instead of holding the stop until docker kills everything
+    server = Server(uvicorn.Config(build_app(svc), host=cfg.host, port=cfg.port, log_level="warning",
+                                   access_log=False, timeout_graceful_shutdown=10))
 
     def stop(sig, frame):
+        svc.stop.set()
         server.should_exit = True
 
     # uvicorn restores the handlers it found and raises the signal again once it has stopped: with the default

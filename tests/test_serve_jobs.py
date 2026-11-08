@@ -2,6 +2,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+from pathlib import Path
+
 import pytest
 from serve_jobs import (BadOptions, Job, JobStore, Options, allowed, options_to_args, parse_options, slugify,
                         split_name)
@@ -86,6 +88,85 @@ def test_create_moves_recording_and_sidecar(store, tmp_path):
     assert store.load(job.id) == job
 
 
+def test_move_copies_across_filesystems(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    import serve_jobs
+    src, dst = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    src.write_bytes(b"video")
+    real = os.replace
+
+    def exdev(a, b):
+        if Path(a) == src:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return real(a, b)
+
+    monkeypatch.setattr(os, "replace", exdev)
+    serve_jobs.move(src, dst)
+    assert dst.read_bytes() == b"video" and not src.exists() and not (tmp_path / "b.mp4.part").exists()
+
+
+def test_move_keeps_the_source_when_it_cannot_be_deleted(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    import serve_jobs
+    src, dst = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    src.write_bytes(b"video")
+    real = os.replace
+    monkeypatch.setattr(os, "replace", lambda a, b: (_ for _ in ()).throw(OSError(errno.EXDEV, "x"))
+                        if Path(a) == src else real(a, b))
+    monkeypatch.setattr(Path, "unlink", lambda self, missing_ok=False: (_ for _ in ()).throw(PermissionError("ro"))
+                        if self == src else os.remove(self))
+    with pytest.raises(PermissionError):
+        serve_jobs.move(src, dst)
+    assert src.exists() and not dst.exists()
+
+
+def test_failed_intake_leaves_nothing_behind(store, tmp_path, monkeypatch):
+    import serve_jobs
+    src = recording(tmp_path)
+    side = src.with_name(src.name + ".json")
+    side.write_text("{}")
+    real = serve_jobs.move
+
+    def fail_on_source(a, b):
+        if a == src:
+            raise OSError(28, "No space left on device")
+        return real(a, b)
+
+    monkeypatch.setattr(serve_jobs, "move", fail_on_source)
+    with pytest.raises(OSError):
+        store.create(src, src.name, Options(), "inbox", side)
+    assert src.exists() and side.exists()  # both still in the inbox
+    assert store.all() == [] and list(store.incoming.iterdir()) == []
+
+
+def test_recover_finishes_or_drops_staged_jobs(store, tmp_path):
+    from serve_jobs import Job
+    store.incoming.mkdir(parents=True)
+    for job_id, with_source in (("20260101-000000-a", True), ("20260101-000000-b", False)):
+        d = store.incoming / job_id
+        d.mkdir()
+        JobStore._write(d, Job(id=job_id, state="queued", created="2026-01-01T00:00:00+00:00",
+                               source={"name": "a.mp4", "size": 5, "origin": "inbox"}, options={}, out_dir="a"))
+        if with_source:
+            (d / "source.mp4").write_bytes(b"video")
+        else:
+            (d / "source.mp4.part").write_bytes(b"vi")
+    assert store.recover() == ["20260101-000000-a"]
+    assert (store.root / "20260101-000000-a" / "source.mp4").exists()
+    assert list(store.incoming.iterdir()) == []
+
+
+def test_one_service_per_jobs_folder(tmp_path):
+    a, b = JobStore(tmp_path / "jobs"), JobStore(tmp_path / "jobs")
+    a.acquire()
+    with pytest.raises(RuntimeError, match="another service"):
+        b.acquire()
+
+
 def test_create_failed(store, tmp_path):
     src = recording(tmp_path)
     job = store.create_failed(src, src.name, "inbox", "bad sidecar: x")
@@ -135,10 +216,10 @@ def test_recover(store, tmp_path):
     store.update(a.id, state="running", attempts=1, pid=123, created="2026-01-01T00:00:03+00:00")
     store.update(b.id, state="running", attempts=2, created="2026-01-01T00:00:01+00:00")
     store.update(c.id, created="2026-01-01T00:00:02+00:00")
-    store.incoming.mkdir()
+    store.incoming.mkdir(exist_ok=True)
     (store.incoming / "x.part").write_bytes(b"half")
     assert store.recover() == [c.id, a.id]
-    assert store.load(a.id).state == "queued" and store.load(a.id).pid is None
+    assert store.load(a.id).state == "queued" and store.load(a.id).pid == 123  # kept: the next start checks it
     assert store.load(b.id).state == "failed" and "interrupted 2 times" in store.load(b.id).error
     assert list(store.incoming.iterdir()) == []
 

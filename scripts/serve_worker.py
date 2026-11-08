@@ -79,6 +79,71 @@ def last_line(path: Path, limit: int = 300) -> str:
     return lines[-1].removeprefix(PREFIX)[:limit] if lines else ""
 
 
+def child_env() -> dict:
+    """The pipeline gets the service's environment without the service's own secrets."""
+    return {k: v for k, v in os.environ.items() if k != "MT_SERVE_TOKEN" and not k.startswith("AWS_")}
+
+
+def group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # macOS answers EPERM for a group whose members are all zombies; elsewhere it is someone else's group
+        return live_members(pgid)
+    return True
+
+
+def live_members(pgid: int) -> bool:
+    """Whether group `pgid` has a member that is not a zombie; without `ps` assume it has."""
+    if not shutil.which("ps"):
+        return True
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pgid=,stat="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return any(g == str(pgid) and not st.startswith("Z") for g, _, st in
+               (line.strip().partition(" ") for line in out.splitlines()))
+
+
+def group_runs(pgid: int, job_dir: Path) -> bool:
+    """Whether process group `pgid` still runs this job: a member's command line names the job folder. A bare
+    pid could be reused by an unrelated process after a restart; the path cannot. Without `ps` (the slim
+    image) the answer is no: inside a container a restart leaves no old processes."""
+    if not group_alive(pgid) or not shutil.which("ps"):
+        return False
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pgid=,args="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in out.splitlines():
+        g, _, args = line.strip().partition(" ")
+        if g == str(pgid) and str(job_dir) in args:
+            return True
+    return False
+
+
+def stop_group(pgid: int, grace_s: float, proc: subprocess.Popen | None = None) -> None:
+    """SIGTERM to the whole group, SIGKILL to whatever is left after `grace_s`. Waits for every member, not
+    only the leader: bash may exit on SIGTERM while a step it started keeps running."""
+    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            if not group_alive(pgid):
+                return  # only zombies are left
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            if proc is not None:
+                proc.poll()  # reap the leader: a zombie still counts as a member
+            if not group_alive(pgid):
+                return
+            time.sleep(0.05)
+
+
 def build_command(transcribe: Path, job: Job, job_dir: Path) -> list[str]:
     opts = Options(**job.options)
     src = job_dir / (f"source.{job.ext}" if job.ext else "source")
@@ -162,16 +227,24 @@ class WorkerPool:
             job = self.store.load(job.id)
             if job.state != "queued":
                 return None
+            # what an earlier attempt left: its processes if the service was killed hard (on the host they
+            # outlive it), and its asr lock, which a restart in a fresh pid namespace can mistake for a live one.
+            # This service is the only one working in its jobs folder (JobStore.acquire)
+            if job.pid and group_runs(job.pid, d):
+                log(f"job {job.id}: stopping what is left of the previous attempt (process group {job.pid})")
+                stop_group(job.pid, self.grace_s)
+            shutil.rmtree(d / job.out_dir / ".work" / ".asr.lock", ignore_errors=True)
             self.store.transition(job, "running")
             job.started, job.attempts, job.stage, job.progress = now_utc(), job.attempts + 1, "audio", 2
             job.error = job.exit_code = None
             job.warnings = []
             with open(d / "log.txt", "ab") as f:
                 f.write(f"--- attempt {job.attempts} {job.started} ---\n".encode())
+                f.flush()  # before the child writes to the same file through its own descriptor
                 offset = f.tell()
                 proc = subprocess.Popen(build_command(self.transcribe, job, d), stdout=f, stderr=subprocess.STDOUT,
                                         stdin=subprocess.DEVNULL, cwd=d, start_new_session=True,
-                                        env=os.environ | {"PYTHONUNBUFFERED": "1"} | self.env)
+                                        env=child_env() | {"PYTHONUNBUFFERED": "1"} | self.env)
             job.pid = proc.pid
             self.running[job.id] = proc
             self.store.save(job)
@@ -183,6 +256,16 @@ class WorkerPool:
         if started is None:
             return
         job, proc, offset = started
+        try:
+            self._follow(job, proc, offset)
+        except BaseException:  # never leave a pipeline running that nothing follows any more
+            stop_group(proc.pid, self.grace_s, proc)
+            with self.store.lock:
+                self.running.pop(job.id, None)
+                self.cancelled.discard(job.id)
+            raise
+
+    def _follow(self, job: Job, proc: subprocess.Popen, offset: int) -> None:
         d = self.store.job_dir(job.id)
         logfile = d / "log.txt"
         t0, rest, reason = time.monotonic(), b"", None
@@ -222,13 +305,14 @@ class WorkerPool:
                 reason = "shutdown"
                 self._terminate(proc)
         follow()
+        # the job stays in self.running until its final state is saved: a cancel or delete meanwhile sees it as
+        # running and does not write a state of its own that this one would overwrite
         with self.store.lock:
-            self.running.pop(job.id, None)
             cancelled = job.id in self.cancelled
-            self.cancelled.discard(job.id)
             try:
                 job = self.store.load(job.id)
             except KeyError:
+                self._release(job.id)
                 return  # deleted while running
         rc = proc.returncode
         job.pid, job.exit_code, job.stage, job.progress, job.warnings = None, rc, stage, pct, warnings
@@ -236,7 +320,9 @@ class WorkerPool:
         if reason == "shutdown" and not cancelled:
             self.store.transition(job, "queued")  # the next start runs it again; the attempt is not counted
             job.attempts, job.stage = max(job.attempts - 1, 0), "queued"
-            self.store.save(job)
+            with self.store.lock:
+                self.store.save(job)
+                self._release(job.id)
             log(f"job {job.id}: stopped by the service shutdown, queued again")
             return
         if cancelled:
@@ -259,22 +345,19 @@ class WorkerPool:
             self.store.transition(job, "failed")
             job.error = last_line(logfile) or f"exit {rc}"
         job.finished = now_utc()
-        self.store.save(job)
+        with self.store.lock:
+            self.store.save(job)
+            self._release(job.id)
         log(f"job {job.id}: {job.state}" + (f" ({job.error})" if job.error else ""))
         self.webhook(job)
 
+    def _release(self, job_id: str) -> None:
+        self.running.pop(job_id, None)
+        self.cancelled.discard(job_id)
+
     def _terminate(self, proc: subprocess.Popen) -> None:
         """The whole process group: bash, and the whisperx / diarize / step it runs."""
-        for sig, wait in ((signal.SIGTERM, self.grace_s), (signal.SIGKILL, 5)):
-            try:
-                os.killpg(proc.pid, sig)
-            except ProcessLookupError:
-                return
-            try:
-                proc.wait(timeout=wait)
-                return
-            except subprocess.TimeoutExpired:
-                continue
+        stop_group(proc.pid, self.grace_s, proc)
 
     def cancel(self, job_id: str) -> Job:
         """A queued job fails at once; a running one is stopped and fails as "cancelled"."""
@@ -282,9 +365,12 @@ class WorkerPool:
             job = self.store.load(job_id)
             proc = self.running.get(job_id)
             if proc is None:
-                self.store.transition(job, "failed")  # ValueError unless queued
+                if job.state != "queued":
+                    raise ValueError(f"job {job_id} is {job.state}: only a queued or running job can be cancelled")
+                self.store.transition(job, "failed")
                 job.error, job.finished, job.stage = "cancelled", now_utc(), "failed"
                 self.store.save(job)
+                self.notify(job)
                 return job
             self.cancelled.add(job_id)
         threading.Thread(target=self._terminate, args=(proc,), daemon=True).start()
@@ -298,6 +384,11 @@ class WorkerPool:
             shutil.rmtree(job_dir / job.out_dir / ".work", ignore_errors=True)
         if not self.keep_source:
             self.store.source_path(job).unlink(missing_ok=True)
+
+    def notify(self, job: Job) -> None:
+        """The webhook from a request or the inbox thread: in the background, it may take up to 10 s."""
+        if self.webhook_url:
+            threading.Thread(target=self.webhook, args=(job,), daemon=True).start()
 
     def webhook(self, job: Job) -> None:
         if not self.webhook_url:

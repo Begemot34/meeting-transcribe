@@ -49,7 +49,8 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     NLTK_DATA=/cache/nltk \
     XDG_CACHE_HOME=/cache/xdg \
     HOME=/cache \
-    MT_SERVE_DATA=/data
+    MT_SERVE_DATA=/data \
+    MT_SERVE_HOST=0.0.0.0
 
 # UID/GID follow the host user (podman build --build-arg UID=$(id -u) --build-arg GID=$(id -g)),
 # so bind mounts and the cache volume stay writable for whoever built the image

@@ -30,9 +30,9 @@ def make(tmp_path):
         svc.shutdown()
 
 
-def upload(client, name="m.mp4", data=b"video", **q):
+def upload(client, name="m.mp4", data=b"video", headers=None, **q):
     return client.post("/api/jobs", params={"name": name, **q}, content=data,
-                       headers={"Content-Type": "application/octet-stream", **q.pop("headers", {})})
+                       headers={"Content-Type": "application/octet-stream", **(headers or {})})
 
 
 def done(client, job_id, state="done"):
@@ -54,6 +54,24 @@ def test_token(make):
     assert c.get("/api/jobs", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert c.get("/api/jobs", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     assert c.get("/api/jobs", params={"token": "s3cret"}).status_code == 200
+
+
+def test_docs_only_without_a_token(make):
+    svc, c = make()
+    assert c.get("/api/openapi.json").status_code == 200
+    svc.shutdown()  # one service per folder
+    _, c = make(token="t")
+    assert c.get("/api/openapi.json").status_code == 404 and c.get("/api/docs").status_code == 404
+
+
+def test_cross_site_writes_refused(make):
+    svc, c = make()
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Origin": "http://evil.example"}):
+        r = upload(c, headers=headers)
+        assert r.status_code == 403, headers
+    assert svc.store.all() == []
+    assert upload(c, headers={"Sec-Fetch-Site": "same-origin"}).status_code == 201
+    assert upload(c, headers={"Origin": "http://testserver"}).status_code == 201
 
 
 def test_upload_runs_to_done(make):
@@ -136,6 +154,34 @@ def test_retry_cancel_delete(make):
     assert c.delete(f"/api/jobs/{job_id}").status_code == 204
     assert c.get(f"/api/jobs/{job_id}").status_code == 404
     assert not (svc.store.root / job_id).exists()
+
+
+def test_second_service_on_one_folder_refuses(make, tmp_path):
+    make()
+    with pytest.raises(SystemExit):
+        service(tmp_path)
+
+
+def test_inbox_and_jobs_in_other_folders(tmp_path):
+    from serve import config_from, parse_args
+    env = {"MT_SERVE_DATA": str(tmp_path / "data"), "MT_SERVE_INBOX": str(tmp_path / "share" / "in"),
+           "MT_SERVE_JOBS": str(tmp_path / "results")}
+    cfg = config_from(parse_args([]), env)
+    assert (cfg.inbox, cfg.jobs) == (tmp_path / "share" / "in", tmp_path / "results")
+    assert config_from(parse_args([]), {"MT_SERVE_DATA": str(tmp_path / "d")}).inbox == tmp_path / "d" / "inbox"
+    cfg.transcribe, cfg.poll_s, cfg.stable_s = FAKE_TRANSCRIBE, 0.05, 0.05
+    svc = Service(cfg, tick=0.05)
+    svc.start()
+    try:
+        c = TestClient(build_app(svc))
+        assert c.get("/healthz").json()["inbox"] == str(tmp_path / "share" / "in")
+        (tmp_path / "share" / "in" / "a.mp4").write_bytes(b"video")
+        job = wait_for(lambda: c.get("/api/jobs").json()["jobs"])[0]
+        assert done(c, job["id"])["state"] == "done"
+        assert (tmp_path / "results" / job["id"] / "a" / "transcript.md").is_file()
+        assert not (tmp_path / "data" / "jobs").exists()
+    finally:
+        svc.shutdown()
 
 
 def test_inbox_to_api(make, tmp_path):

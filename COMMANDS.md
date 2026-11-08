@@ -154,6 +154,6 @@ works, the API and the container setup: [service in a container](CONTAINER.md#se
 | Option | Default | What it does |
 | --- | --- | --- |
 | `--data DIR` | `MT_SERVE_DATA`, else `./data` | data folder: `inbox/` for new recordings, `jobs/` for the results |
-| `--host H` | `MT_SERVE_HOST`, else `0.0.0.0` | address the web UI and the API listen on |
+| `--host H` | `MT_SERVE_HOST`, else `127.0.0.1` (image: `0.0.0.0`) | address the web UI and the API listen on |
 | `--port N` | `MT_SERVE_PORT`, else `8080` | their port |
 | `--workers N` | `MT_SERVE_WORKERS`, else `1` | recordings processed at once; each takes the memory of a whole run |

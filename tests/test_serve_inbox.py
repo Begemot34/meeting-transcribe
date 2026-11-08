@@ -102,6 +102,30 @@ def test_scanner_fails_a_bad_sidecar(tmp_path):
     assert list(inbox.iterdir()) == []
 
 
+def test_scanner_backs_off_a_file_it_cannot_take(tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    put(inbox, "a.mp4")
+    store = JobStore(tmp_path / "jobs")
+    calls = []
+
+    def broken(*a, **k):
+        calls.append(1)
+        raise PermissionError("read-only share")
+
+    monkeypatch.setattr(store, "create", broken)
+    stop = threading.Event()
+    sc = Scanner(inbox, store, lambda _: None, poll_s=0.02, stable_s=0.05, stop=stop, retry_after_s=60)
+    sc.start()
+    try:
+        wait_for(lambda: calls)
+        import time
+        time.sleep(0.5)
+    finally:
+        stop.set()
+        sc.join(2)
+    assert len(calls) == 1 and (inbox / "a.mp4").exists()
+
+
 def test_scanner_two_drops_of_one_name(tmp_path):
     inbox = tmp_path / "inbox"
     store, submitted, stop, sc = run_scanner(tmp_path)

@@ -1,0 +1,8 @@
+# The inbox in its own host folder over compose.yaml, e.g. a network share mounted on the host:
+#   docker compose -f compose.yaml -f compose.inbox.yaml up -d serve
+# or once in .env:  COMPOSE_FILE=compose.yaml:compose.inbox.yaml  and  MT_INBOX_DIR=/mnt/share/meetings-in
+# A recording from there is copied into its job folder (another mount), then deleted from the inbox.
+services:
+  serve:
+    volumes:
+      - ${MT_INBOX_DIR:?set MT_INBOX_DIR to the host folder of the inbox}:/data/inbox
