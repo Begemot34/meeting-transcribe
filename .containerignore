@@ -18,6 +18,8 @@ work/
 .gitignore
 Makefile
 compose.yaml
+compose.*.yaml
+data/
 transcribe-container
 CONTAINER*.md
 config.env

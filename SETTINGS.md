@@ -30,6 +30,35 @@
 
 `setup` saves its settings to the file in `MT_CONFIG`.
 
+## Service
+
+What [`serve`](COMMANDS.md#serve) reads ([service in a container](CONTAINER.md#service) shows them in use). Only
+the data folder, the address and the number of workers have command-line options too.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MT_SERVE_DATA` | `./data` (in the image `/data`) | data folder: `inbox/` for new recordings, `jobs/` for the jobs and their results |
+| `MT_SERVE_INBOX` | `<MT_SERVE_DATA>/inbox` | the inbox on its own path, e.g. a network share |
+| `MT_SERVE_JOBS` | `<MT_SERVE_DATA>/jobs` | the jobs and their results on their own path |
+| `MT_SERVE_HOST` | `127.0.0.1` (image: `0.0.0.0`) | address the web UI and the API listen on; the default is this machine only, in the image all interfaces, and compose publishes the port on `127.0.0.1` |
+| `MT_SERVE_PORT` | `8080` | their port |
+| `MT_SERVE_TOKEN` | — | access token for `/api/*` (`Authorization: Bearer …` or `?token=`); without it anyone who reaches the port can use the service. With a token the interactive `/api/docs` is off |
+| `MT_SERVE_WORKERS` | `1` | recordings processed at once; every one needs the memory of a whole run (6–8 GB RAM, a GPU with 12 GB holds one) |
+| `MT_SERVE_POLL_S` | `5` | seconds between two looks into the inbox |
+| `MT_SERVE_STABLE_S` | `10` | seconds a file must keep its size and time before it is taken: a copy in progress stays where it is |
+| `MT_SERVE_JOB_TIMEOUT_S` | `0` | stop a job after this many seconds and mark it failed; `0` — never |
+| `MT_SERVE_MAX_ATTEMPTS` | `2` | how many times in all a job starts when a restart or a crash of the service cuts it off; `2` is one rerun, then it is marked failed |
+| `MT_SERVE_KEEP_WORK` | `0` | `1`: keep the work folder `.work` of a finished job (audio, raw recognition), for reruns of single steps |
+| `MT_SERVE_KEEP_SOURCE` | `1` | `0`: delete the recording after a successful run; such a job cannot be retried |
+| `MT_SERVE_KEEP_DAYS` | `0` | delete finished jobs older than this many days; `0` — keep everything |
+| `MT_SERVE_MAX_UPLOAD_MB` | `8192` | largest upload through the web UI or the API, MB |
+| `MT_SERVE_WEBHOOK_URL` | — | when a job ends, POST `{"event": "job.done"\|"job.failed", "job": {…}}` to this address; a cancelled job is `job.failed` with the error `cancelled` |
+| `MT_SERVE_S3_BUCKET` | — | copy the results (`transcript.md`, HTML, PDF) to this S3 bucket; keys come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
+| `MT_SERVE_S3_PREFIX` | — | key prefix: the files land at `<prefix><job id>/<file>` |
+| `MT_SERVE_S3_ENDPOINT` | AWS | S3-compatible storage address, e.g. `https://<account id>.r2.cloudflarestorage.com` for Cloudflare R2 |
+| `MT_SERVE_S3_REGION` | — | bucket region; `auto` for Cloudflare R2 |
+| `MT_SERVE_TRANSCRIBE` | `transcribe` of this folder | the pipeline a job runs; the tests put a stub here |
+
 ## Speed
 
 On an M4 Pro: with `mlx-large-v3-turbo` (the default on Apple Silicon) about 0.1× the recording length, an

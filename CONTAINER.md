@@ -76,12 +76,125 @@ set it yourself, and refuses to run with `MT_DEVICE=cuda` on a non-cuda image.
 ## Compose
 
 ```bash
-podman-compose build
-podman-compose run --rm transcribe auto /work/meeting.mp4 /work/out
+docker compose build
+docker compose run --rm transcribe auto /work/meeting.mp4 /work/out
+# podman: the podman-only settings are in an override file
+podman-compose -f compose.yaml -f compose.podman.yaml build
+podman-compose -f compose.yaml -f compose.podman.yaml run --rm transcribe auto /work/meeting.mp4 /work/out
 ```
 
 The repo directory is mounted at `/work`. The `mt-cache` volume has a fixed name, so the models and settings are
-shared with `transcribe-container`.
+shared with `transcribe-container`. `compose.cuda.yaml` on top switches both services to the cuda image and the
+host GPU. Compose works on macOS too (Docker Desktop, CPU only); on a Mac `./transcribe serve` without a container
+is faster, since it uses the Apple GPU.
+
+## Service
+
+`serve` turns the image into a service that people use without a terminal: they drop a recording into a folder
+or upload it in the browser, and pick up the HTML, PDF or Markdown when it is ready.
+
+```bash
+mkdir -p data/inbox   # before the first start: otherwise docker creates ./data owned by root
+docker compose run --rm transcribe setup --language ru,en --summary none --yes   # models, once
+docker compose up -d serve
+docker compose logs -f serve
+```
+
+The web UI and the API are at `http://127.0.0.1:8080/`. Compose publishes the port only on this machine; to open
+it to the network change `ports` in `compose.yaml` to `"8080:8080"` and set `MT_SERVE_TOKEN`. Without compose:
+`transcribe-container serve` (Linux, stops with Ctrl+C), or `./transcribe serve` on the host.
+
+**Folders and settings.** Compose reads `.env` next to `compose.yaml` (it is in `.gitignore`): put the
+`MT_SERVE_*` settings there and the host folder with `inbox/` and `jobs/` in `MT_DATA_DIR`. An inbox in a folder
+of its own, e.g. a network share, comes with `compose.inbox.yaml`:
+
+```bash
+MT_DATA_DIR=/srv/meetings
+MT_SERVE_WORKERS=1
+MT_SERVE_TOKEN=change-me
+# the inbox on a share:
+COMPOSE_FILE=compose.yaml:compose.inbox.yaml
+MT_INBOX_DIR=/mnt/share/meetings-in
+```
+
+A recording in the separate inbox is copied into its job folder, not moved, then deleted from the inbox: a rename
+does not cross mounts. Outside compose the folders are `MT_SERVE_INBOX` and `MT_SERVE_JOBS`. Compose checks `/healthz` every 30
+seconds, so `docker compose ps` shows whether the service is healthy.
+
+**How a recording travels.** `data/` holds two folders:
+
+```text
+data/inbox/                          drop recordings here (mp4, mkv, mov, webm, m4a, mp3, wav, …)
+data/jobs/20261108-141500-board/     one folder per recording
+  job.json                           state: queued, running, done, failed; stage, percent, errors
+  log.txt                            the full output of `auto`
+  source.mp4                         the recording, moved out of the inbox
+  board/                             the results: transcript.md, board.html, board.pdf, screenshots/
+```
+
+The inbox is polled every `MT_SERVE_POLL_S` seconds; a file is taken once its size and time have not changed for
+`MT_SERVE_STABLE_S` seconds, so a copy over the network is not taken half-way. Temporary names (`.part`, `.tmp`,
+`.crdownload`, names starting with `.` or `~`) are ignored. Polling instead of file events: events do not cross
+bind mounts, SMB or NFS reliably. The inbox can be a network share mounted into the container.
+
+Options for one recording go into a file next to it, named after it plus `.json`, written before the recording
+itself:
+
+```json
+{"title": "Board meeting", "date": "2026-11-05", "language": "ru", "summary": "none", "names": true}
+```
+
+Every key is optional; `summary` is one of `local`, `api`, `none` (and `claude`, `codex`, `opencode` on the host).
+A bad file fails the job with the reason, it does not stay in the inbox.
+
+**Queue and workers.** Jobs run in the order they came, `MT_SERVE_WORKERS` at a time (default 1). One run of
+`large-v3` with diarization takes 6–8 GB of RAM or most of a 12 GB GPU, so a second worker pays off only with
+memory for two. A stop of the service (`docker compose stop`, a restart, a deploy) stops the running jobs and
+queues them again: the next start continues them, reusing the extracted audio. A job cut off by a crash runs
+again up to `MT_SERVE_MAX_ATTEMPTS` times. `MT_SERVE_JOB_TIMEOUT_S` stops a job that hangs; for long recordings
+on the CPU give it hours (e.g. `21600`).
+
+**Picking up the results.**
+
+- in the browser: the jobs table with progress, links to HTML, PDF and Markdown, the log, and retry, cancel,
+  delete;
+- in the folder: `data/jobs/<id>/<name>/`, e.g. shared over SMB or synced;
+- by webhook: `MT_SERVE_WEBHOOK_URL` gets a POST with `{"event": "job.done", "job": {…}}` when a job ends
+  (n8n, a chat bot, your own script);
+- in S3: with `MT_SERVE_S3_BUCKET` the results are copied to `<prefix><job id>/` in the bucket; keys come from
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Any S3-compatible storage works (Cloudflare R2, Garage, Ceph, a
+  cloud provider's object storage) through `MT_SERVE_S3_ENDPOINT`; for R2 it is
+  `https://<account id>.r2.cloudflarestorage.com` with `MT_SERVE_S3_REGION=auto`;
+- through the API, below.
+
+**API.** With `MT_SERVE_TOKEN` set, every `/api/*` call needs `Authorization: Bearer <token>` (or `?token=` in a
+link). The interactive description is at `/api/docs` while no token is set.
+
+| Call | What it does |
+| --- | --- |
+| `POST` or `PUT /api/jobs?name=<file>&title=&date=&language=&summary=&names=` | upload a recording as the request body; returns the job |
+| `GET /api/jobs` | all jobs, newest first |
+| `GET /api/jobs/<id>` | one job: `state`, `stage`, `progress`, `error`, `warnings`, `artifacts`, `s3` |
+| `GET /api/jobs/<id>/files/<name>` | a result from `artifacts`, or `log.txt` |
+| `GET /api/jobs/<id>/log?tail=200` | the end of the log |
+| `POST /api/jobs/<id>/retry` | run a finished or failed job again |
+| `POST /api/jobs/<id>/cancel` | stop a queued or running job |
+| `DELETE /api/jobs/<id>` | delete a job that is not running, with its files |
+| `GET /healthz` | liveness and queue size, no token needed |
+
+```bash
+curl -T meeting.mp4 -H "Authorization: Bearer $MT_SERVE_TOKEN" \
+  "http://127.0.0.1:8080/api/jobs?name=meeting.mp4&title=Board&summary=none"
+curl -H "Authorization: Bearer $MT_SERVE_TOKEN" http://127.0.0.1:8080/api/jobs/<id>
+curl -OJ -H "Authorization: Bearer $MT_SERVE_TOKEN" http://127.0.0.1:8080/api/jobs/<id>/files/<name>.pdf
+```
+
+Behind a reverse proxy raise its body limit for uploads (nginx: `client_max_body_size 8g;`). Finished jobs are
+kept until deleted; `MT_SERVE_KEEP_DAYS` deletes old ones, `MT_SERVE_KEEP_SOURCE=0` deletes the recording after
+a successful run. One data folder serves one service: a second one on the same `jobs/` refuses to start. Every setting: [settings of the service](SETTINGS.md#service).
+
+The service dependencies (fastapi, uvicorn, boto3) are in the image. On the host `./transcribe serve` installs them
+on its first start, and again after a dependency update.
 
 ## Where things live
 

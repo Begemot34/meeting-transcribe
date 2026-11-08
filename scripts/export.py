@@ -291,8 +291,27 @@ no_summary_html = (f'<section class="nosum"><p>{esc(L["no_summary"])}</p><div cl
                    f'<button class="copy" type="button" title="Copy" aria-label="Copy" '
                    f'data-copy="{html.escape(summary_run, quote=True)}">{COPY_ICON}</button></div></section>')
 
+# The only script of the page: the screenshot lightbox and the copy buttons. The policy below allows exactly this
+# text by its hash, so if a speaker name or OCR text ever slipped past esc() as a <script>, the browser would not
+# run it — which matters when the service serves the page from the origin of its API.
+VIEWER_JS = """
+const lb=document.getElementById('lb'),li=lb.querySelector('img');
+document.querySelectorAll('figure.shot img').forEach(i=>i.onclick=()=>{li.src=i.src;lb.classList.add('on')});
+lb.onclick=()=>lb.classList.remove('on');
+document.addEventListener('keydown',e=>{if(e.key==='Escape')lb.classList.remove('on')});
+document.querySelectorAll('button.copy').forEach(b=>b.onclick=async()=>{
+  const t=b.dataset.copy, icon=b.innerHTML;
+  try{await navigator.clipboard.writeText(t)}catch(_){
+    const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove()}
+  b.classList.add('ok');b.innerHTML='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+  setTimeout(()=>{b.classList.remove('ok');b.innerHTML=icon},1200)});
+"""
+CSP = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
+       f"script-src 'sha256-{base64.b64encode(hashlib.sha256(VIEWER_JS.encode()).digest()).decode()}'")
+
 doc = f"""<!doctype html>
-<html lang="{LANG}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="{LANG}"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{CSP}"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)}</title>
 <style>
 /* Meeting minutes as a document: one text column, section labels in a left rail, hairline rules, no cards. */
@@ -381,18 +400,7 @@ footer a{{color:var(--mut)}}
 {''.join(tr)}
 </section>
 <div class="lightbox" id="lb"><img alt=""></div>
-<script>
-const lb=document.getElementById('lb'),li=lb.querySelector('img');
-document.querySelectorAll('figure.shot img').forEach(i=>i.onclick=()=>{{li.src=i.src;lb.classList.add('on')}});
-lb.onclick=()=>lb.classList.remove('on');
-document.addEventListener('keydown',e=>{{if(e.key==='Escape')lb.classList.remove('on')}});
-document.querySelectorAll('button.copy').forEach(b=>b.onclick=async()=>{{
-  const t=b.dataset.copy, icon=b.innerHTML;
-  try{{await navigator.clipboard.writeText(t)}}catch(_){{
-    const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove()}}
-  b.classList.add('ok');b.innerHTML='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-  setTimeout(()=>{{b.classList.remove('ok');b.innerHTML=icon}},1200)}});
-</script>
+<script>{VIEWER_JS}</script>
 <footer>{made_with}</footer>
 </div></body></html>
 """

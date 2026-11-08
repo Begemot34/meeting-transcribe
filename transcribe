@@ -97,7 +97,12 @@ ensure_env() {
   if [ "$build" = cuda ]; then size="~5 GB with the CUDA libraries"; fi
   if [ ! -x "$PY" ] || [ "$ROOT/uv.lock" -nt "$VENV/.synced" ] || [ "$synced" != "$build" ]; then
     log "installing dependencies ($build build of torch) into $VENV (first time: a few minutes, $size)…"
-    (cd "$ROOT" && uv sync --frozen --extra "$build" --python 3.11 --compile-bytecode --quiet >&2) \
+    # the service extra stays once `serve` installed it: a pipeline the service starts runs this too, and a sync
+    # without it would uninstall the service's own packages from under it
+    local extra=""
+    if [ -f "$VENV/.serve" ]; then extra="--extra serve"; fi
+    # shellcheck disable=SC2086  # $extra: no option or one, unquoted on purpose
+    (cd "$ROOT" && uv sync --frozen --extra "$build" $extra --python 3.11 --compile-bytecode --quiet >&2) \
       || die "dependency install failed (uv sync), see the output above"
     log "dependencies installed"
     echo "$build" > "$VENV/.synced"
@@ -232,6 +237,11 @@ Maintenance:
   doctor [--language ru]  show what is installed and where the models are; installs and downloads nothing
   install-skill           register SKILL.md for agents (Claude Code, Codex, OpenCode, Gemini CLI, Cursor, Cline, …)
   uninstall-skill         remove what install-skill wrote
+
+Service:
+  serve [--data DIR] [--host H] [--port N] [--workers N]
+                          run as a service: take recordings from DIR/inbox (default ./data) or the web UI, process
+                          them in a queue, serve the results over HTTP (CONTAINER.md, Service; settings: SETTINGS.md, Service)
 
 All options: COMMANDS.md; environment variables: SETTINGS.md.
 EOF
@@ -829,6 +839,18 @@ cmd_auto() {
   "$PY" -I "$S/export.py" "$out"
 }
 
+cmd_serve() {  # the web dependencies are the extra `serve`: ensure_env syncs only the torch build, so add them here
+  if ! "$PY" -c 'import fastapi, uvicorn, boto3' 2>/dev/null; then
+    local build; build="$(cat "$VENV/.synced" 2>/dev/null || echo cpu)"
+    log "installing the service dependencies (fastapi, uvicorn, boto3) into $VENV…"
+    (cd "$ROOT" && uv sync --frozen --extra "$build" --extra serve --python 3.11 --compile-bytecode --quiet >&2) \
+      || die "dependency install failed (uv sync --extra serve), see the output above"
+  fi
+  touch "$VENV/.serve" 2>/dev/null || true  # ensure_env keeps the extra from now on (the image's .venv is read-only)
+  # exec: in a container the service is PID 1 and has to receive SIGTERM itself
+  exec "$PY" -I "$S/serve.py" "$@"
+}
+
 cmd_doctor() {
   echo "uv:        $(command -v uv || { [ -x "$HOME/.local/bin/uv" ] && echo "$HOME/.local/bin/uv"; } || echo 'missing — setup installs it')"
   if [ ! -x "$PY" ]; then
@@ -919,7 +941,7 @@ skill_status() {  # for doctor
 cmd="$1"; shift
 # a typo or a missing argument must not start installing gigabytes first
 case "$cmd" in
-  -h|--help|help|install-skill|uninstall-skill|doctor|setup) ;;
+  -h|--help|help|install-skill|uninstall-skill|doctor|setup|serve) ;;
   asr|auto|frames|merge) [ $# -ge 2 ] || die "usage: $cmd <$( [ "$cmd" = merge ] && echo work || echo video )> <$( [ "$cmd" = auto ] && echo out_dir || { [ "$cmd" = merge ] && echo out_dir || echo work; } )> — see ./transcribe help" ;;
   badges|strip|summarize|export) [ $# -ge 1 ] || die "usage: $cmd … — see ./transcribe help" ;;
   *) usage; die "unknown command: $cmd" ;;
@@ -941,4 +963,5 @@ case "$cmd" in
   merge) [ $# -ge 2 ] && guard_dir "$2"; "$PY" -I "$S/merge.py" "$@" ;;
   summarize) "$PY" -I "$S/summarize.py" "$@" ;;
   export) "$PY" -I "$S/export.py" "$@" ;;
+  serve) cmd_serve "$@" ;;
 esac

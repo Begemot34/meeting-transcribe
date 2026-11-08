@@ -7,6 +7,8 @@ __pycache__/
 .export_cache/
 out/
 work/
+# ./transcribe serve: inbox and jobs with real recordings and transcripts
+/data/
 *.mp4
 *.mov
 *.mkv

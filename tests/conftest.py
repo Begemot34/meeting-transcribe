@@ -52,3 +52,18 @@ def utt(speaker, start, end, *words):
 
 def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+FAKE_TRANSCRIBE = DATA / "fake_transcribe"
+
+
+def wait_for(cond, timeout=10.0, step=0.02):
+    """Polls cond() until it is truthy (and returns it) or fails the test after `timeout` seconds."""
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = cond()
+        if v:
+            return v
+        time.sleep(step)
+    raise AssertionError(f"condition not met in {timeout} s")

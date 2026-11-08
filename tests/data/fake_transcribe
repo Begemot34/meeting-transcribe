@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# A fake ./transcribe for the service tests: `auto <video> <out> [flags]` prints the log lines the real pipeline
+# prints and writes the files it writes, in no time. FAKE_SLEEP=N pauses mid-run, FAKE_FAIL=1 fails recognition,
+# FAKE_SUMMARY_FAIL=1 prints the "summary failed" warning.
+set -eu
+[ "${1:-}" = auto ] || { echo "fake transcribe: only auto" >&2; exit 2; }
+video="$2" out="$3"; shift 3
+title=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --title) title="$2"; shift 2 ;;
+    --date|--language|--summary) shift 2 ;;
+    --no-summary|--no-names) shift ;;
+    *) echo "auto: unknown argument $1" >&2; exit 1 ;;
+  esac
+done
+[ -f "$video" ] || { echo "no recording $video" >&2; exit 1; }
+printf '%s\n' "$title" > "$out.title"
+log() { printf '\033[1;34m[transcribe]\033[0m %s\n' "$*" >&2; }
+mkdir -p "$out/.work"
+log "recognition (ru, large-v3) and diarization run in parallel (fast), logs: $out/.work/whisperx.log"
+log "  text: recognizing 40% · speakers: 20% · 0:30 of ~5:00"
+sleep "${FAKE_SLEEP:-0}"
+if [ -n "${FAKE_FAIL:-}" ]; then
+  printf '\033[1;31m[transcribe]\033[0m %s\n' "speech recognition failed (exit 1), log: $out/.work/whisperx.log" >&2
+  exit 1
+fi
+echo "turns=3 speakers=['SPEAKER_00', 'SPEAKER_01'] time=1s"
+echo "candidates=4"; echo "kept=2"; echo "sheets=1"
+echo "utterances=5 frames=2 duration=00:10"
+[ -z "${FAKE_SUMMARY_FAIL:-}" ] || log "the summary failed (see above) — building the transcript without it"
+printf '# %s\n\n## Transcript\n' "$title" > "$out/transcript.md"
+name="$(basename "$out")"
+printf '<html>%s</html>\n' "$title" > "$out/$name.html"
+printf '%%PDF-1.4\n' > "$out/$name.pdf"
+echo "html: $out/$name.html (0.1 MB)"
+echo "pdf: $out/$name.pdf (0.1 MB)"

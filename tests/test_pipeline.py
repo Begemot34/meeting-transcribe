@@ -1,5 +1,7 @@
 """merge → export on a synthetic meeting, run as ./transcribe runs them: `python -I`, from another folder, under a
 path with a space and non-ASCII letters. The golden files were made by merge.py before its refactor into functions."""
+import base64
+import hashlib
 import re
 
 import pytest
@@ -70,6 +72,20 @@ def test_export_escapes_html(meeting):
     page = (out / "out.html").read_text(encoding="utf-8")
     assert "<script>alert(1)</script>" not in page and "&lt;script&gt;" in page
     assert not (out / "out.pdf").exists()
+
+
+def test_export_allows_only_its_own_script(meeting):
+    """The page's policy names its one script by hash: a script that slipped into the text would not run."""
+    out = meeting.parent / "out"
+    merge(meeting, out)
+    assert run_script("export", out, "--no-pdf", cwd=out).returncode == 0
+    page = (out / "out.html").read_text(encoding="utf-8")
+    policy = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">', page).group(1)
+    scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+    assert len(scripts) == 1 and "default-src 'none'" in policy
+    digest = base64.b64encode(hashlib.sha256(scripts[0].encode()).digest()).decode()
+    assert f"script-src 'sha256-{digest}'" in policy
+    assert page.index("Content-Security-Policy") < page.index("<body")
 
 
 @pytest.mark.parametrize("link", ["../../secret.jpg", "/etc/hosts", "screenshots/link.jpg"])

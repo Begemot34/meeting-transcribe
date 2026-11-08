@@ -1,0 +1,8 @@
+# podman-only settings over compose.yaml (docker does not know keep-id):
+#   podman-compose -f compose.yaml -f compose.podman.yaml up -d serve
+# keep-id: the container user is you, so ./data and the bind-mounted folders stay yours on the host
+services:
+  transcribe:
+    userns_mode: keep-id
+  serve:
+    userns_mode: keep-id

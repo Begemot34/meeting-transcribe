@@ -1,20 +1,25 @@
-# meeting-transcribe with podman-compose. The repo directory is mounted at /work, the models
-# download once into the mt-cache volume (podman volume ls shows it, podman volume rm mt-cache
-# clears it):
-#   podman-compose build
-#   podman-compose run --rm transcribe setup --language ru,en --summary none --yes
-#   podman-compose run --rm transcribe auto /work/meeting.mp4 /work/out
+# meeting-transcribe with docker compose or podman-compose. Models and settings download once into the mt-cache
+# volume; the service keeps its inbox and results in ./data.
+#
+# docker:  docker compose build
+#          mkdir -p data/inbox      # before the first start, so ./data is yours and not root's
+#          docker compose run --rm transcribe setup --language ru,en --summary none --yes
+#          docker compose up -d serve                      # web UI and API at http://127.0.0.1:8080/
+#          docker compose run --rm transcribe auto /work/meeting.mp4 /work/out   # a one-off run
+# settings: put MT_SERVE_* and MT_DATA_DIR (the host folder) into .env next to this file
+# podman:  the same with podman-compose -f compose.yaml -f compose.podman.yaml …
+# NVIDIA:  add -f compose.cuda.yaml (CONTAINER.md, NVIDIA GPU)
 services:
   transcribe:
     image: localhost/meeting-transcribe:latest
     build:
-      # on a host with another uid/gid run: env UID=$(id -u) GID=$(id -g) podman-compose build
+      # on a host with another uid/gid run: env UID=$(id -u) GID=$(id -g) docker compose build
       context: .
+      dockerfile: Containerfile
       args:
         DEVICE: cpu
         UID: ${UID:-1000}
         GID: ${GID:-1000}
-    userns_mode: keep-id
     # label=disable: rootless single-user host + CDI GPU, per podman docs; on a shared host reconsider
     security_opt:
       - label=disable
@@ -27,6 +32,81 @@ services:
     # the wrapper passes all MT_*; this list is compose's explicit version
     environment:
       - MT_CONFIG=/cache/config.env
+      - MT_LANGUAGE
+      - MT_DEVICE
+      - MT_ALIGN_MODEL
+      - MT_COMPUTE_TYPE
+      - MT_DIARIZE_DEVICE
+      - MT_WHISPER_MODEL
+      - MT_LLM
+      - MT_LLM_BASE_URL
+      - MT_LLM_API_KEY
+      - MT_LLM_MODEL
+      - MT_LLM_TEMPERATURE
+      - MT_LLM_TIMEOUT
+      - MT_LOCAL_MODEL
+      - MT_OPENCODE_MODEL
+      - HF_TOKEN
+      - HTTPS_PROXY
+      - HTTP_PROXY
+      - NO_PROXY
+      - OLLAMA_HOST
+
+  # the service: recordings from ./data/inbox or the web UI, a queue, results in ./data/jobs and over HTTP
+  serve:
+    image: localhost/meeting-transcribe:latest
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        DEVICE: cpu
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    security_opt:
+      - label=disable
+    command: serve
+    # an init as PID 1 reaps the pipeline's children; the grace period lets running jobs stop and requeue
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      # only this machine; "8080:8080" opens it to the network — then set MT_SERVE_TOKEN
+      - "127.0.0.1:${MT_SERVE_PORT:-8080}:8080"
+    # the host folder with inbox/ and jobs/: MT_DATA_DIR in .env next to this file. One mount on purpose: a recording
+    # moves from inbox/ into its job by a rename, which fails between two mounts and turns into a copy. An inbox
+    # elsewhere (a network share): compose.inbox.yaml. Create the folders before the first start, or docker creates
+    # them owned by root
+    volumes:
+      - mt-cache:/cache
+      - ${MT_DATA_DIR:-./data}:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    environment:
+      - MT_CONFIG=/cache/config.env
+      - MT_SERVE_DATA=/data
+      - MT_SERVE_TOKEN
+      - MT_SERVE_WORKERS
+      - MT_SERVE_POLL_S
+      - MT_SERVE_STABLE_S
+      - MT_SERVE_JOB_TIMEOUT_S
+      - MT_SERVE_MAX_ATTEMPTS
+      - MT_SERVE_KEEP_WORK
+      - MT_SERVE_KEEP_SOURCE
+      - MT_SERVE_KEEP_DAYS
+      - MT_SERVE_MAX_UPLOAD_MB
+      - MT_SERVE_WEBHOOK_URL
+      - MT_SERVE_S3_BUCKET
+      - MT_SERVE_S3_PREFIX
+      - MT_SERVE_S3_ENDPOINT
+      - MT_SERVE_S3_REGION
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - TZ
       - MT_LANGUAGE
       - MT_DEVICE
       - MT_ALIGN_MODEL
